@@ -15,6 +15,7 @@ const key = () => JSON.stringify(location());
 const base = (p) => p.split("/").pop();
 // Viewed holds while the file's "index a..b" line is the one saved.
 const fp = (f) => f.index ?? "-";
+const VIEWED_W = 90; // right end of a diff file header: the Viewed checkbox
 // Uncommitted changes vs HEAD (empty tree without commits) plus untracked files, as one unified diff.
 // The flags keep git from writing under .git, or the folder watch would trigger itself.
 const R = "--no-optional-locks -c core.fsmonitor=false -c diff.autoRefreshIndex=false";
@@ -55,7 +56,7 @@ export default class Review extends View {
   // Diff pane: {view: "diff", root}. Rows are a flat list of items (file | sep | row) for one virtual list.
   initDiff(props, cx) {
     this.view = "diff"; this.root = props.root; this.files = []; this.items = []; this.sizes = []; this.gen = 0; this.wd = new Map();
-    this.scroll = VirtualListScrollHandle.new(); this.fh = cx.focus_handle(); this.textW = 0; this.composer = null; this.sel = null;
+    this.scroll = VirtualListScrollHandle.new(); this.fh = cx.focus_handle(); this.textW = 0; this.composer = null; this.sel = null; this.flip = new Map();
     this.ta = TextareaState.new({ placeholder: "Comment…", rows: 4 });
     this.ta.on("submit", (e, cx) => e.secondary && this.saveComposer(cx));
     this.gotoN = Date.now() - 5000; // a goto set just before this pane opened still applies
@@ -139,7 +140,8 @@ export default class Review extends View {
         r ? (near[r.key] ??= []).push(th) : orphans.push(th);
       }
       delete byFile[f.path];
-      push({ kind: "file", key: f.path, file: f.path, f }, 32);
+      push({ kind: "file", key: f.path, file: f.path, f, shut: this.shut(f, st) }, 32);
+      if (this.items.at(-1).shut) continue;
       for (const r of rows) {
         push({ ...r, file: f.path }, r.kind === "sep" ? 22 : 20);
         for (const th of near[r.key] ?? []) thread(th);
@@ -150,6 +152,9 @@ export default class Review extends View {
     const rest = Object.values(byFile).flat().filter(th => !scope || th[0].file === scope);
     if (rest.length) { push({ kind: "sep", key: "#orphans", text: "Comments on files no longer in the diff" }, 22); rest.forEach(th => thread(th, true)); }
   }
+
+  // Viewed files start collapsed, like GitLab; a click on the header flips that until Viewed changes.
+  shut(f, st) { const seen = st.viewed?.[f.path] === fp(f); return this.flip.get(f.path) === seen ? !seen : seen; }
 
   diffItem(it, t, st) {
     const tag = (text, color) => div().px(4).rounded(4).border_1().border_color(t.border).text_size(10).text_color(color).child(text);
@@ -176,12 +181,16 @@ export default class Review extends View {
         .child(Textarea.new(this.ta).h(80)), it.h);
     }
     if (it.kind === "file") {
-      const f = it.f, [letter, color] = { added: ["A", t.ansi2], deleted: ["D", t.ansi1], renamed: ["R", t.accent] }[f.status] ?? ["M", t.blocked];
+      const f = it.f, seen = st.viewed?.[f.path] === fp(f), [letter, color] = { added: ["A", t.ansi2], deleted: ["D", t.ansi1], renamed: ["R", t.accent] }[f.status] ?? ["M", t.blocked];
       return h_flex().w_full().h(32).px(12).gap(8).items_center().bg(t.raised).border_t(1).border_b(1).border_color(t.border)
+        .child(div().w(10).flex_none().text_color(t.dim).child(it.shut ? "▸" : "▾"))
         .child(div().w(12).flex_none().text_color(color).child(letter))
         .child(div().flex_1().min_w(0).truncate().font_semibold().child(f.status === "renamed" ? `${f.oldPath} → ${f.path}` : f.path))
         .when(f.binary, e => e.child(tag("binary", t.dim)))
-        .when(st.viewed?.[f.path] === fp(f), e => e.child(tag("✓ Viewed", t.accent)));
+        .child(h_flex().w(VIEWED_W - 12).flex_none().gap(6).items_center().justify_end().text_size(11).text_color(t.dim)
+          .child(div().w(14).h(14).flex().items_center().justify_center().rounded(3).border_1().border_color(seen ? t.accent : t.input)
+            .bg(seen ? t.accent : t.background).text_size(10).text_color(t.accent_foreground).child(seen ? "✓" : ""))
+          .child("Viewed"));
     }
     if (it.kind === "sep") return div().w_full().h(22).px(12).flex().items_center().bg(t.canvas).text_color(t.dim).child(div().min_w(0).truncate().child(it.text));
     const { left: l, right: r } = it, k = l?.type === "-" && r?.type === "+" && `${l.text}\0${r.text}`;
@@ -199,7 +208,7 @@ export default class Review extends View {
 
   renderDiff() {
     const t = theme(), st = shared(`review:${this.root}`) ?? {}, scope = st.scope ?? null;
-    const built = `${this.gen}:${scope}:${this.textW}:${JSON.stringify(st.comments ?? {})}:${JSON.stringify(this.composer)}`;
+    const built = `${this.gen}:${scope}:${this.textW}:${JSON.stringify(st.comments ?? {})}:${JSON.stringify(this.composer)}:${JSON.stringify(st.viewed ?? {})}:${JSON.stringify([...this.flip])}`;
     if (this.built !== built) this.build(st, built);
     const g = shared("review.goto");
     if (g?.root === this.root && g.n > this.gotoN) {
@@ -210,14 +219,14 @@ export default class Review extends View {
     const status = this.error ?? (this.raw === undefined ? "Loading…" : !count ? "No changes" : null);
     return v_flex().id("review-diff").size_full().min_h(0).bg(t.background).text_color(t.foreground).text_size(13)
       .track_focus(this.fh).on_key_down((e, cx) => this.diffKey(e, cx))
-      .on_size_change((s, cx) => { const w = Math.floor((s.width - 1) / 2) - 74; if (w !== this.textW) { this.textW = w; cx.notify(); } })
+      .on_size_change((s, cx) => { this.paneW = s.width; const w = Math.floor((s.width - 1) / 2) - 74; if (w !== this.textW) { this.textW = w; cx.notify(); } })
       .child(h_flex().h(36).flex_none().px(12).gap(8).items_center().border_b(1).border_color(t.border)
         .child(div().font_semibold().child("Diff"))
         .child(div().min_w(0).truncate().text_size(11).text_color(t.muted).child(base(this.root ?? "")))
         .when(Boolean(scope), e => e.child(div().px(4).rounded(4).border_1().border_color(t.border).text_size(10).text_color(t.accent).child(`only ${scope}`)))
         .child(div().flex_1())
         .child(div().text_size(11).text_color(t.dim).child(`${count} ${count === 1 ? "file" : "files"}`)))
-      .child(div().flex_1().min_h(0).relative().font_family(settings().font_family ?? "JetBrains Mono").text_size(12)
+      .child(div().flex_1().min_h(0).relative().on_mouse_down("left", (e) => { this.down = e.local_position.x > (e.bounds?.width ?? this.paneW ?? Infinity) - VIEWED_W; }).font_family(settings().font_family ?? "JetBrains Mono").text_size(12)
         .child(v_virtual_list("review-diff-list", this.items.length, this.sizes, (i) => this.items[i].key,
           (range) => this.items.slice(range.start, range.end).map(it => this.diffItem(it, t, st))).track_scroll(this.scroll).size_full()
           .on_item_click((key, cx) => this.itemClick(key, null, cx)).on_item_secondary_click((key, e, cx) => this.itemClick(key, e, cx)))
@@ -230,6 +239,13 @@ export default class Review extends View {
   itemClick(key, e, cx) {
     const it = this.items.find(x => x.key === key);
     if (!it || it.kind === "composer") return;
+    if (it.kind === "file") {
+      if (e) return;
+      if (this.down) return this.toggleViewed(it.f);
+      const seen = (this.store().viewed ?? {})[it.file] === fp(it.f);
+      this.flip.get(it.file) === seen ? this.flip.delete(it.file) : this.flip.set(it.file, seen);
+      return cx.notify();
+    }
     if (it.kind === "comment") {
       if (e) return;
       if (this.sel === it.c.id && !this.composer) return this.openComposer(cx, { reply: it.c });
@@ -399,19 +415,32 @@ export default class Review extends View {
       .bg(on ? t.solid : t.raised).text_color(on ? t.solid_foreground : t.dim).when(on, e => e.cursor_pointer().hover(s => s.opacity(0.88)))
       .on_click((_e, cx) => on && action(cx)).child(text);
     const tag = (text, color) => div().px(4).rounded(4).border_1().border_color(t.border).text_size(10).text_color(color).child(text);
-    const file = (path) => {
+    const file = (path, depth) => {
       const f = this.files.find(x => x.path === path), on = f && st.viewed?.[path] === fp(f);
       const count = threads.filter(th => th[0].file === path).length, todo = pend.filter(c => c.file === path).length;
-      return v_flex().gap(2).pb(6)
-        .child(h_flex().id(`f-${path}`).h(26).px(6).gap(8).items_center().rounded(6).when(Boolean(f), e => e.cursor_pointer().hover(s => s.bg(t.hover)))
-          .when(this.current === path, e => e.bg(t.selected)).on_click((e, cx) => f && (e.click_count === 2 ? this.save({ ...this.store(), scope: st.scope === path ? null : path }) : this.open(path, cx)))
-          .child(div().id(`v-${path}`).w(14).h(14).flex_none().on_click((_e, cx) => { cx.stop_propagation(); f && this.toggleViewed(f); }).flex().items_center().justify_center().rounded(3).border_1().border_color(on ? t.accent : t.input)
-            .bg(on ? t.accent : t.background).text_size(10).text_color(t.accent_foreground).child(on ? "✓" : ""))
-          .child(div().flex_1().min_w(0).truncate().text_color(on ? t.dim : t.foreground).child(path))
-          .when(st.scope === path, e => e.child(tag("only this", t.accent)))
-          .when(todo > 0, e => e.child(tag(`${todo} unsent`, t.blocked)))
-          .when(!todo && count > 0, e => e.child(tag(`${count} ${count === 1 ? "thread" : "threads"}`, t.dim))));
+      return h_flex().id(`f-${path}`).h(26).pl(6 + 14 * depth).pr(6).gap(6).items_center().rounded(6).when(Boolean(f), e => e.cursor_pointer().hover(s => s.bg(t.hover)))
+        .when(this.current === path, e => e.bg(t.selected)).on_click((e, cx) => f && (e.click_count === 2 ? this.save({ ...this.store(), scope: st.scope === path ? null : path }) : this.open(path, cx)))
+        .child(div().w(12).flex_none().text_size(11).text_color(t.accent).child(on ? "✓" : ""))
+        .child(div().flex_1().min_w(0).truncate().text_color(on ? t.dim : t.foreground).child(base(path)))
+        .when(st.scope === path, e => e.child(tag("only this", t.accent)))
+        .when(todo > 0, e => e.child(tag(`${todo} unsent`, t.blocked)))
+        .when(!todo && count > 0, e => e.child(tag(`${count} ${count === 1 ? "thread" : "threads"}`, t.dim)));
     };
+    const dir = (name, path, depth, shut) => h_flex().id(`d-${path}`).h(24).pl(6 + 14 * depth).pr(6).gap(6).items_center().rounded(6)
+      .cursor_pointer().hover(s => s.bg(t.hover)).text_color(t.muted)
+      .on_click((_e, cx) => { this.closed ??= new Set(); this.closed.has(path) ? this.closed.delete(path) : this.closed.add(path); cx.notify(); })
+      .child(div().w(12).flex_none().text_size(11).child(shut ? "▸" : "▾")).child(div().flex_1().min_w(0).truncate().child(name));
+    const root = {}, rows = [];
+    for (const path of paths) { let n = root; const parts = path.split("/"); for (const d of parts.slice(0, -1)) n = n[`${d}/`] ??= {}; n[parts.at(-1)] = path; }
+    const walk = (n, depth, pre) => {
+      for (const k of Object.keys(n).sort((a, b) => b.endsWith("/") - a.endsWith("/") || a.localeCompare(b))) {
+        if (!k.endsWith("/")) { rows.push(file(n[k], depth)); continue; }
+        const shut = Boolean(this.closed?.has(pre + k));
+        rows.push(dir(k.slice(0, -1), pre + k, depth, shut));
+        if (!shut) walk(n[k], depth + 1, pre + k);
+      }
+    };
+    walk(root, 0, "");
     const status = this.error ?? (!this.root ? "No repository" : this.raw === undefined ? "Loading…" : !paths.length ? "No changes" : null);
     return v_flex().id("review").size_full().min_h(0).rounded(10).overflow_hidden().bg(t.background).border_1().border_color(t.border).text_color(t.foreground).text_size(13)
       .child(h_flex().h(42).flex_none().px(14).gap(8).items_center().border_b(1).border_color(t.border)
@@ -421,7 +450,7 @@ export default class Review extends View {
         .child(div().flex_1())
         .when(Boolean(this.root), e => e.child(button("diff", this.diffPane() ? "Show diff" : "Open diff", !this.busy, cx => this.openDiff(cx))))
         .child(div().id("refresh").px(4).cursor_pointer().text_color(t.dim).hover(s => s.text_color(t.foreground)).on_click((_e, cx) => this.refresh(cx)).child("↻")))
-      .child(v_flex().id("review-list").flex_1().min_h(0).overflow_y_scrollbar().p(8).children(paths.map(file))
+      .child(v_flex().id("review-list").flex_1().min_h(0).overflow_y_scrollbar().p(8).children(rows)
         .when(Boolean(status), e => e.child(div().p(8).text_color(t.dim).child(status))))
       .child(v_flex().flex_none().p(10).gap(8).border_t(1).border_color(t.border)
         .when(ours.length > 1, e => e.child(h_flex().flex_wrap().gap(6).children(ours.map(a =>

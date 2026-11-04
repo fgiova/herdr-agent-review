@@ -1,6 +1,6 @@
 # Agent Review
 
-A GitLab-style code review of the uncommitted changes in a git repo, made for reviewing what a Claude Code agent just wrote. A side panel lists the changed files with a "Viewed" checkbox each; a pane opens next to the terminals with a side-by-side diff where changed words are highlighted, comments sit inline under the lines as threads, and "Send review" sends every unsent comment to the space's Claude Code agent as one message. The agent answers each thread by appending a line to a file in `.git`, and its replies show up under the same lines.
+A GitLab-style code review of the uncommitted changes in a git repo, made for reviewing what a Claude Code agent just wrote. A side panel lists the changed files as a folder tree; a pane opens next to the terminals with a side-by-side diff where changed words are highlighted, each file has a "Viewed" checkbox and viewed files fold away like on GitLab, comments sit inline under the lines as threads, and "Send review" sends every unsent comment to the space's Claude Code agent as one message. The agent answers each thread by appending a line to a file in `.git`, and its replies show up under the same lines.
 
 ![Agent Review](preview.png)
 
@@ -8,14 +8,14 @@ A GitLab-style code review of the uncommitted changes in a git repo, made for re
 
 **Side panel** (a layout block, ~368px wide in the author's layout, rounded 10px, `t.background`, 1px `t.border`):
 - Header, 42px: "Review" semibold, the repo folder name in `t.muted` 11px, a `Viewed x/y` tag, then on the right a solid button "Open diff" (or "Show diff" when the pane already exists in the space) and a `↻` refresh glyph.
-- File list (scrolls): one 26px row per changed file and per file that still has threads. A 14px checkbox (filled `t.accent` with ✓ when viewed), the path (dimmed once viewed), then tags 10px with a 1px border: `only this` (accent) when the diff is narrowed to this file, `N unsent` (`t.blocked`) for unsent comments, else `N threads` (dim). The last clicked file gets `t.selected`.
+- File list (scrolls): a folder tree of the changed files and the files that still have threads, folders first, then by name, indented 14px per level. A folder row is 24px in `t.muted`: a `▾`/`▸` glyph and the folder name. A file row is 26px: a 12px column with an accent `✓` when viewed, the file name (dimmed once viewed), then tags 10px with a 1px border: `only this` (accent) when the diff is narrowed to this file, `N unsent` (`t.blocked`) for unsent comments, else `N threads` (dim). The last clicked file gets `t.selected`.
 - Status line when there's nothing to list: "Not a git repository", "No repository", "Loading…", "No changes".
 - Footer: when the space has more than one Claude Code agent, a chip per agent (`<tab name> · <address>`, accent border on the chosen one); a line `→ <tab> (<address>)` or "No Claude agent in this space"; buttons "Clear sent" and "Send review (N)" (disabled with no agent or nothing to send, "Sending…" while sending); under them a one-line note (dim on success, `t.blocked` on error).
 
 **Diff pane** (a mod pane split to the right, zoomed and focused):
 - Header, 36px: "Diff", the repo name, a `only <file>` accent tag when narrowed, `N files` on the right.
 - One virtual list in the terminal font (`settings().font_family`, 12px):
-  - File header 32px on `t.raised`, top/bottom border: a status letter (A `t.ansi2`, D `t.ansi1`, R `t.accent`, M `t.blocked`), the path (`old → new` for renames), `binary` tag, `✓ Viewed` tag.
+  - File header 32px on `t.raised`, top/bottom border: a dim `▾` (open) or `▸` (folded), a status letter (A `t.ansi2`, D `t.ansi1`, R `t.accent`, M `t.blocked`), the path (`old → new` for renames), `binary` tag, and at the right end a 14px checkbox (filled `t.accent` with ✓ when viewed) with a dim 11px "Viewed". A folded file shows only its header.
   - Hunk header 22px on `t.canvas`, dim `@@ … @@` text.
   - Line rows 20px, two equal columns split by a 1px `t.border` line. Each column: a 40px right-aligned dim line number, then the text. Removed lines `t.ansi1` at 0x18 alpha on the left, added `t.ansi2` at 0x18 on the right, context on `t.background` both sides, the empty side of an unpaired line on `t.chrome`. When a removed line is paired with an added one, the changed words get a stronger 0x40 alpha of the same color.
   - Threads under the line they're anchored to, in that line's column (old left, new right), indented 48px, replies 16px more. Each comment is a rounded box: a header line with the author ("you" for the user, else the agent's name), `unsent` in `t.blocked` if unsent, and when selected the key hints on the right; then the text wrapped to the column. User comments on `t.raised` with `t.border`; agent comments with a `t.accent` border and accent-tinted background; the selected one with a `t.foreground` border on `t.selected`.
@@ -26,7 +26,8 @@ A GitLab-style code review of the uncommitted changes in a git repo, made for re
 
 - The panel follows the focused pane's folder; with the diff pane focused it uses a terminal of the same tab. Outside a git repo it says so.
 - "Open diff" splits the focused pane to the right with the diff, zooms and focuses it; "Show diff" zooms and focuses the existing one.
-- Clicking a file scrolls the diff to it (opening/showing the pane). If the diff is narrowed to another file, the narrowing moves to this one. Double-click narrows the diff to that file, again shows all files. The checkbox toggles Viewed; Viewed stays until that file's diff changes.
+- Clicking a file scrolls the diff to it (opening/showing the pane). If the diff is narrowed to another file, the narrowing moves to this one. Double-click narrows the diff to that file, again shows all files. Clicking a folder folds or unfolds it (not kept across restarts).
+- In a diff file header, a click on the right 90px (the Viewed checkbox) toggles Viewed; Viewed stays until that file's diff changes. Viewed files start folded; a click elsewhere on the header folds or unfolds the file, and that choice holds until its Viewed state changes.
 - Both views refresh when files in the repo change (folder watch) and every 10s; the diff is re-parsed only when git's output changed.
 - In the diff: click a line to comment on its new side (old if it only has an old side); right-click picks the side under the pointer. `cmd-enter` saves, `esc` cancels; one comment box at a time.
 - Click a comment to select it; with it selected `r` replies, `e` edits and `d`/`backspace` deletes (whole thread if it's the first comment). Edit and delete only for the user's own comments; agent notes can only be replied to. A second click on the selected comment replies. `esc` clears the selection.
@@ -52,7 +53,7 @@ A GitLab-style code review of the uncommitted changes in a git repo, made for re
 ## Watch out
 
 - Pane props come from `props()`, not from `init`'s argument: reading `init(props)` makes the pane a second copy of the panel.
-- Event handlers inside virtual list items don't work: use the list's `on_item_click` / `on_item_secondary_click` and work out the item from its key; keys go to the list container via `track_focus` + `on_key_down`.
+- Event handlers inside virtual list items don't work: use the list's `on_item_click` / `on_item_secondary_click` and work out the item from its key; keys go to the list container via `track_focus` + `on_key_down`. To tell a click on the header's Viewed checkbox from one on the rest of the header, an `on_mouse_down` on the list's container records whether the pointer was in the right 90px, and `on_item_click` reads it.
 - Every item needs its height in the sizes array up front, so comment text is wrapped in JS at an estimated 7.2px per character of the column width (`on_size_change`).
 - Clicking a comment must not open the textarea right away, or the textarea takes the keys and `e`/`d` never reach the list.
 - Focus the textarea after a short sleep (~50ms), once the item exists.
@@ -69,6 +70,6 @@ A GitLab-style code review of the uncommitted changes in a git repo, made for re
 - In a repo with a commit, changing one word of a line shows the line paired across both columns with only that word highlighted on each side; a new untracked file shows as A with an empty left column.
 - "Open diff" opens a split pane that is zoomed and focused; clicking a file in the panel scrolls the pane to it; double-click shows only that file.
 - Clicking a line, typing and `cmd-enter` adds a comment under it, marked `unsent`, and the panel shows `1 unsent`; `r`, `e`, `d` reply, edit and delete it.
-- Viewed survives a restart and clears after that file is edited again.
+- Ticking Viewed in a file's diff header folds the file and puts a ✓ by it in the panel; Viewed survives a restart and clears (unfolding the file) after that file is edited again.
 - Running the `jq` reply command from the sent message adds an accent-styled agent reply under the thread and empties `.git/herdr-review.jsonl`.
 - After committing a file, its threads disappear within 10s.

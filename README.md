@@ -1,6 +1,6 @@
 # Agent Review — a Herdr mod
 
-GitLab-style code review of the uncommitted changes in a git repo, made for reviewing what a Claude Code agent just wrote. A side panel lists the changed files with a "Viewed" checkbox; a pane next to your terminals shows a side-by-side diff with word-level highlights and inline comment threads. "Send review" sends every unsent comment to the space's Claude Code agent as one message, and the agent's replies show up under the same lines.
+GitLab-style code review of the uncommitted changes in a git repo, made for reviewing what a Claude Code agent just wrote. A side panel lists the changed files as a folder tree; a pane next to your terminals shows a side-by-side diff with word-level highlights, inline comment threads and a "Viewed" checkbox per file, which folds the files you have checked, like on GitLab. "Send review" sends every unsent comment to the space's Claude Code agent as one message, and the agent's replies show up under the same lines.
 
 ![Agent Review](preview.png)
 
@@ -68,11 +68,12 @@ In Herdr, ask an agent: *"Install the Herdr mod from https://github.com/fgiova/h
 ## Use
 
 1. In a space whose terminal is inside a git repo with uncommitted changes, show the Agent Review panel and click **Open diff**: the diff opens as a pane, zoomed and focused.
-2. Click a line to comment on it; `cmd-enter` saves, `esc` cancels. Right-click comments on the side under the pointer.
-3. Click a comment to select it: `r` replies, `e` edits, `d` deletes.
-4. **Send review (N)** sends all unsent comments to the space's Claude Code agent. When the space has several, pick one from the chips in the panel footer.
-5. The agent replies by appending a line to `.git/herdr-review.jsonl` (the message includes the exact `jq` command); replies appear under their threads within seconds.
-6. **Clear sent** removes the threads you sent and the agent answered.
+2. Tick **Viewed** at the right of a file's header to fold it and mark it in the panel. Click elsewhere on a header to fold or unfold that file.
+3. Click a line to comment on it; `cmd-enter` saves, `esc` cancels. Right-click comments on the side under the pointer.
+4. Click a comment to select it: `r` replies, `e` edits, `d` deletes.
+5. **Send review (N)** sends all unsent comments to the space's Claude Code agent. When the space has several, pick one from the chips in the panel footer.
+6. The agent replies by appending a line to `.git/herdr-review.jsonl` (the message includes the exact `jq` command); replies appear under their threads within seconds.
+7. **Clear sent** removes the threads you sent and the agent answered.
 
 Comments and "Viewed" marks are kept per repo and survive restarts. A file's "Viewed" mark clears when its diff changes.
 
