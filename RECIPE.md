@@ -1,8 +1,8 @@
-# Review
+# Agent Review
 
 A GitLab-style code review of the uncommitted changes in a git repo, made for reviewing what a Claude Code agent just wrote. A side panel lists the changed files with a "Viewed" checkbox each; a pane opens next to the terminals with a side-by-side diff where changed words are highlighted, comments sit inline under the lines as threads, and "Send review" sends every unsent comment to the space's Claude Code agent as one message. The agent answers each thread by appending a line to a file in `.git`, and its replies show up under the same lines.
 
-![Review](preview.png)
+![Agent Review](preview.png)
 
 ## What you see
 
@@ -39,9 +39,9 @@ A GitLab-style code review of the uncommitted changes in a git repo, made for re
 
 ## Built from
 
-- Files: `mods/review/main.js` (one `View` class with two views), `mods/review/diff.js` (pure functions), `mod.json` `{ "place": "none", "title": "Review" }`.
-- Layout: a block `{ "mod": "review" }` with no props is the panel. The author keeps it as the third child of a `stack` (`panel-body`) inside a `column` node `panel`, next to the shipped `files` and `changes`, and toggles it with `layout.select {stack: "panel-body", child: "review"}` + `layout.show {id: "panel"}`.
-- The diff pane: `pane.split {direction: "right", pane, mod: "review", props: {view: "diff", root}}` through `exec("herdr-app", ["do", …])` to get its id back, then `pane.zoom` and `pane.focus`. `init` reads `props()` from `herdr` and shows the diff when `view === "diff"`.
+- Files: `mods/agent-review/main.js` (one `View` class with two views), `mods/agent-review/diff.js` (pure functions), `mod.json` `{ "place": "none", "title": "Agent Review" }`.
+- Layout: a block `{ "mod": "agent-review" }` with no props is the panel. The author keeps it as the third child of a `stack` (`panel-body`) inside a `column` node `panel`, next to the shipped `files` and `changes`, and toggles it with `layout.select {stack: "panel-body", child: "review"}` + `layout.show {id: "panel"}`.
+- The diff pane: `pane.split {direction: "right", pane, mod: "agent-review", props: {view: "diff", root}}` through `exec("herdr-app", ["do", …])` to get its id back, then `pane.zoom` and `pane.focus`. `init` reads `props()` from `herdr` and shows the diff when `view === "diff"`.
 - Git, in one `sh -c` per refresh: `B=$(git rev-parse -q --verify HEAD || git hash-object -t tree /dev/null)`, echo `$B` (the HEAD for pruning), `git diff $B`, then `git ls-files -z -o --exclude-standard | xargs -0 -n1 git diff --no-index -- /dev/null` for untracked files. All with `--no-optional-locks -c core.fsmonitor=false -c diff.autoRefreshIndex=false`, `--no-color --no-ext-diff --no-textconv`.
 - `diff.js`: `parseUnified` (files with status, rename, binary, the `index a..b` line, blocks of rows with line numbers), `pairSplit` (runs of `-` then `+` paired 1:1), `wordDiff` (LCS over `\w+|\s+|[^\w\s]` tokens, merged segments), `anchor` (re-anchoring), `mergeAgent` (JSONL into the store), `reviewMessage`. `node diff.js` runs its asserts.
 - State: `shared("review:<repo root>") = { comments, viewed, scope, head }`. A comment is `{ id, source: "user"|"agent", author, file, side: "old"|"new", line, text, at, parentId, sent, ctx? }`; `viewed[path]` is the file's `index a..b` line. `shared("review.goto") = { root, file, n }` tells the pane where to scroll.
@@ -61,11 +61,11 @@ A GitLab-style code review of the uncommitted changes in a git repo, made for re
 - The pane must stay on its own repo (`props.root`); the panel's repo changes with focus, so drop stale results when the repo changed during a refresh.
 - A mod only starts once shown: a pane opened in a hidden space does nothing until you go there.
 - Limits: diff rows capped at 1500 per file, lines at 4000 characters; word diff off above 400 tokens per side; quoted git paths (unusual characters) aren't parsed; re-anchoring is an exact text match only; the JSONL channel works for local repos only; no limit on untracked files.
-- The author opens the panel from a "Review" tab-bar button and `cmd-shift-r` in a cloned tabs mod; that toggle also closes the space's `review` panes (`panes().filter(p => p.mod === "review")` → `pane.close`) and brings back the panel it covered. Without it, show the block with `layout.select` / `layout.show`.
+- The author opens the panel from a "Review" tab-bar button and `cmd-shift-r` in a cloned tabs mod; that toggle also closes the space's `agent-review` panes (`panes().filter(p => p.mod === "agent-review")` → `pane.close`) and brings back the panel it covered. Without it, show the block with `layout.select` / `layout.show`.
 
 ## Done when
 
-- `herdr-app check mods/review` passes and `node mods/review/diff.js` prints `ok`.
+- `herdr-app check mods/agent-review` passes and `node mods/agent-review/diff.js` prints `ok`.
 - In a repo with a commit, changing one word of a line shows the line paired across both columns with only that word highlighted on each side; a new untracked file shows as A with an empty left column.
 - "Open diff" opens a split pane that is zoomed and focused; clicking a file in the panel scrolls the pane to it; double-click shows only that file.
 - Clicking a line, typing and `cmd-enter` adds a comment under it, marked `unsent`, and the panel shows `1 unsent`; `r`, `e`, `d` reply, edit and delete it.

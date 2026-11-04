@@ -353,13 +353,13 @@ export default class Review extends View {
 
   diffPane() {
     const tabs = new Set(spaces().find(s => s.active)?.tabs.map(t => t.id));
-    return panes().find(p => p.mod === "review" && tabs.has(p.tab));
+    return panes().find(p => p.mod === "agent-review" && tabs.has(p.tab));
   }
 
   openDiff(cx) {
     if (this.busy) return; // a split already on its way
     const shown = this.diffPane()?.pane, pane = focused()?.pane, root = this.root;
-    this.task(cx, "diff", async () => spotlight(shown ?? (await act("pane.split", { direction: "right", mod: "review", props: { view: "diff", root }, ...(pane ? { pane } : {}) })).pane));
+    this.task(cx, "diff", async () => spotlight(shown ?? (await act("pane.split", { direction: "right", mod: "agent-review", props: { view: "diff", root }, ...(pane ? { pane } : {}) })).pane));
   }
 
   // Click: scroll the diff pane to the file, opening or showing the pane. Scoped to another file, the scope moves here.
