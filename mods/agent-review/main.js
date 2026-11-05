@@ -55,7 +55,7 @@ export default class Review extends View {
 
   // Diff pane: {view: "diff", root}. Rows are a flat list of items (file | sep | row) for one virtual list.
   initDiff(props, cx) {
-    this.view = "diff"; this.root = props.root; this.files = []; this.items = []; this.sizes = []; this.gen = 0; this.wd = new Map();
+    this.view = "diff"; this.root = props.root; this.on = props.on ?? null; this.files = []; this.items = []; this.sizes = []; this.gen = 0; this.wd = new Map();
     this.scroll = VirtualListScrollHandle.new(); this.fh = cx.focus_handle(); this.textW = 0; this.composer = null; this.sel = null; this.flip = new Map();
     this.ta = TextareaState.new({ placeholder: "Comment…", rows: 4 });
     this.ta.on("submit", (e, cx) => e.secondary && this.saveComposer(cx));
@@ -85,22 +85,23 @@ export default class Review extends View {
 
   // Agent replies appended to <git-dir>/herdr-review.jsonl (commands in reviewMessage): merged into the store, then the file is emptied.
   // Read by the pane and the sidebar: a line taken by both is added once (same id) and only one empty write passes the CAS.
-  // ponytail: local repos only (writeTextFile is local); a file over 1 MiB is never read.
+  // ponytail: a file over 1 MiB is never read; on another machine the file is emptied by line count, not compare-and-swap.
   async takeAgent() {
     const root = this.root;
     try {
-      if (!this.gitDir) { const g = await exec("git", ["rev-parse", "--absolute-git-dir"], { cwd: this.root }); if (g.code) return; this.gitDir = g.stdout.trim(); }
-      const path = `${this.gitDir}/herdr-review.jsonl`, raw = await readTextFile(path);
+      if (!this.gitDir) { const g = await exec("git", ["rev-parse", "--absolute-git-dir"], { cwd: this.root, on: this.on }); if (g.code) return; this.gitDir = g.stdout.trim(); }
+      const path = `${this.gitDir}/herdr-review.jsonl`, raw = await readTextFile(path, { on: this.on });
       if (!raw || root !== this.root) return;
       this.setComments(all => (mergeAgent(raw, all), all));
-      await writeTextFile(path, "", raw); // rejects if the agent appended meanwhile: the next look takes it all again, ids dedup
+      if (!this.on) await writeTextFile(path, "", raw); // rejects if the agent appended meanwhile: the next look takes it all again, ids dedup
+      else await exec("sh", ["-c", '[ "$(wc -l < "$1")" -eq "$2" ] && : > "$1"', "sh", path, String((raw.match(/\n/g) ?? []).length)], { on: this.on });
     } catch { /* retried at the next look */ }
   }
 
   // One loop per watched root; a loop whose root is no longer shown ends at its next event.
   watch(cx) {
     const root = this.root;
-    if ((this.watching ??= new Set()).has(root)) return;
+    if (this.on || (this.watching ??= new Set()).has(root)) return; // watchFolder is local: remote repos refresh on the timer
     this.watching.add(root);
     cx.spawn(async (cx) => {
       try { while (root === this.root) { await watchFolder(root); if (root === this.root) this.loadDiff(cx); } } catch { } finally { this.watching.delete(root); }
@@ -375,7 +376,7 @@ export default class Review extends View {
   openDiff(cx) {
     if (this.busy) return; // a split already on its way
     const shown = this.diffPane()?.pane, pane = focused()?.pane, root = this.root;
-    this.task(cx, "diff", async () => spotlight(shown ?? (await act("pane.split", { direction: "right", mod: "agent-review", props: { view: "diff", root }, ...(pane ? { pane } : {}) })).pane));
+    this.task(cx, "diff", async () => spotlight(shown ?? (await act("pane.split", { direction: "right", mod: "agent-review", props: { view: "diff", root, on: this.on ?? null }, ...(pane ? { pane } : {}) })).pane));
   }
 
   // Click: scroll the diff pane to the file, opening or showing the pane. Scoped to another file, the scope moves here.

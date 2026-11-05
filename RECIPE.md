@@ -24,11 +24,11 @@ A GitLab-style code review of the uncommitted changes in a git repo, made for re
 
 ## How it behaves
 
-- The panel follows the focused pane's folder; with the diff pane focused it uses a terminal of the same tab. Outside a git repo it says so.
+- The panel follows the focused pane's folder; with the diff pane focused it uses a terminal of the same tab. Outside a git repo it says so. A space on another machine works the same: git and the agent channel run there (`exec`/`readTextFile` with `on: space.machine`).
 - "Open diff" splits the focused pane to the right with the diff, zooms and focuses it; "Show diff" zooms and focuses the existing one.
 - Clicking a file scrolls the diff to it (opening/showing the pane). If the diff is narrowed to another file, the narrowing moves to this one. Double-click narrows the diff to that file, again shows all files. Clicking a folder folds or unfolds it (not kept across restarts).
 - In a diff file header, a click on the right 90px (the Viewed checkbox) toggles Viewed; Viewed stays until that file's diff changes. Viewed files start folded; a click elsewhere on the header folds or unfolds the file, and that choice holds until its Viewed state changes.
-- Both views refresh when files in the repo change (folder watch) and every 10s; the diff is re-parsed only when git's output changed.
+- Both views refresh when files in the repo change (folder watch, local repos only) and every 10s; the diff is re-parsed only when git's output changed.
 - In the diff: click a line to comment on its new side (old if it only has an old side); right-click picks the side under the pointer. `cmd-enter` saves, `esc` cancels; one comment box at a time.
 - Click a comment to select it; with it selected `r` replies, `e` edits and `d`/`backspace` deletes (whole thread if it's the first comment). Edit and delete only for the user's own comments; agent notes can only be replied to. A second click on the selected comment replies. `esc` clears the selection.
 - "Send review (N)" sends one message, grouped by file, with each thread as `- file:line [thread <id>] — text` and its replies, followed by the exact `jq` commands the agent runs to reply. It goes to the chosen agent (or the focused one, else the one in the active tab, else the most recent) with `hc send`; the comments then count as sent. Messages over 50 KB aren't sent.
@@ -42,7 +42,7 @@ A GitLab-style code review of the uncommitted changes in a git repo, made for re
 
 - Files: `mods/agent-review/main.js` (one `View` class with two views), `mods/agent-review/diff.js` (pure functions), `mod.json` `{ "place": "none", "title": "Agent Review" }`.
 - Layout: a block `{ "mod": "agent-review" }` with no props is the panel. The author keeps it as the third child of a `stack` (`panel-body`) inside a `column` node `panel`, next to the shipped `files` and `changes`, and toggles it with `layout.select {stack: "panel-body", child: "review"}` + `layout.show {id: "panel"}`.
-- The diff pane: `pane.split {direction: "right", pane, mod: "agent-review", props: {view: "diff", root}}` through `exec("herdr-app", ["do", …])` to get its id back, then `pane.zoom` and `pane.focus`. `init` reads `props()` from `herdr` and shows the diff when `view === "diff"`.
+- The diff pane: `pane.split {direction: "right", pane, mod: "agent-review", props: {view: "diff", root, on}}` (`on`: the space's machine, null here), through `exec("herdr-app", ["do", …])` to get its id back, then `pane.zoom` and `pane.focus`. `init` reads `props()` from `herdr` and shows the diff when `view === "diff"`.
 - Git, in one `sh -c` per refresh: `B=$(git rev-parse -q --verify HEAD || git hash-object -t tree /dev/null)`, echo `$B` (the HEAD for pruning), `git diff $B`, then `git ls-files -z -o --exclude-standard | xargs -0 -n1 git diff --no-index -- /dev/null` for untracked files. All with `--no-optional-locks -c core.fsmonitor=false -c diff.autoRefreshIndex=false`, `--no-color --no-ext-diff --no-textconv`.
 - `diff.js`: `parseUnified` (files with status, rename, binary, the `index a..b` line, blocks of rows with line numbers), `pairSplit` (runs of `-` then `+` paired 1:1), `wordDiff` (LCS over `\w+|\s+|[^\w\s]` tokens, merged segments), `anchor` (re-anchoring), `mergeAgent` (JSONL into the store), `reviewMessage`. `node diff.js` runs its asserts.
 - State: `shared("review:<repo root>") = { comments, viewed, scope, head }`. A comment is `{ id, source: "user"|"agent", author, file, side: "old"|"new", line, text, at, parentId, sent, ctx? }`; `viewed[path]` is the file's `index a..b` line. `shared("review.goto") = { root, file, n }` tells the pane where to scroll.
@@ -57,11 +57,11 @@ A GitLab-style code review of the uncommitted changes in a git repo, made for re
 - Every item needs its height in the sizes array up front, so comment text is wrapped in JS at an estimated 7.2px per character of the column width (`on_size_change`).
 - Clicking a comment must not open the textarea right away, or the textarea takes the keys and `e`/`d` never reach the list.
 - Focus the textarea after a short sleep (~50ms), once the item exists.
-- The panel and the pane both write the store and both read the JSONL: re-read the store right before every write, dedup agent lines by id (lines without an id get a hash of the line), and empty the file with `writeTextFile(path, "", raw)` so lines appended meanwhile aren't lost.
+- The panel and the pane both write the store and both read the JSONL: re-read the store right before every write, dedup agent lines by id (lines without an id get a hash of the line), and empty the file with `writeTextFile(path, "", raw)` so lines appended meanwhile aren't lost. `writeTextFile` and `watchFolder` are local only: on another machine the file is emptied with `sh -c '[ "$(wc -l < "$1")" -eq "$2" ] && : > "$1"'` (only if its line count is still the one read), and the diff refreshes on the timer.
 - Git must not write under `.git` (the flags above), or the folder watch wakes itself forever.
 - The pane must stay on its own repo (`props.root`); the panel's repo changes with focus, so drop stale results when the repo changed during a refresh.
 - A mod only starts once shown: a pane opened in a hidden space does nothing until you go there.
-- Limits: diff rows capped at 1500 per file, lines at 4000 characters; word diff off above 400 tokens per side; quoted git paths (unusual characters) aren't parsed; re-anchoring is an exact text match only; the JSONL channel works for local repos only; no limit on untracked files.
+- Limits: diff rows capped at 1500 per file, lines at 4000 characters; word diff off above 400 tokens per side; quoted git paths (unusual characters) aren't parsed; re-anchoring is an exact text match only; remote repos refresh every 10s only, and their JSONL is emptied by line count, not compare-and-swap; no limit on untracked files.
 - The author opens the panel from a "Review" tab-bar button and `cmd-shift-r` in a cloned tabs mod; that toggle also closes the space's `agent-review` panes (`panes().filter(p => p.mod === "agent-review")` → `pane.close`) and brings back the panel it covered. Without it, show the block with `layout.select` / `layout.show`.
 
 ## Done when

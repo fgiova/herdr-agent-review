@@ -7,7 +7,7 @@ GitLab-style code review of the uncommitted changes in a git repo, made for revi
 ## Requirements
 
 - [Herdr](https://herdr.dev) desktop app.
-- `git` and a POSIX `sh` with `xargs` on the machine.
+- `git` and a POSIX `sh` with `xargs` on the machine the repo is on (this one, or a machine added to Herdr).
 - A Claude Code agent running in the same Herdr space, to receive the review.
 - `jq` on the agent's machine: the agent uses it to post its replies.
 
@@ -79,10 +79,24 @@ Comments and "Viewed" marks are kept per repo and survive restarts. A file's "Vi
 
 ## Limits
 
-- Agent replies work for local repos only.
+- Repos on another machine refresh every 10 seconds instead of on file changes.
 - Up to 1500 diff rows per file and 4000 characters per line. Word highlighting is off for lines with more than 400 tokens per side.
 - File paths that git quotes (unusual characters) aren't parsed.
 - Comments are re-anchored by exact text match: after an edit, threads whose line changed are listed at the end of their file.
+
+## Update
+
+Herdr doesn't update mods by itself. Each version is a [GitHub release](https://github.com/fgiova/herdr-agent-review/releases) with its notes, and its number is in `mods/agent-review/mod.json` (`"version"`). To hear about new ones, use **Watch → Custom → Releases** on this repository.
+
+To update, replace the mod's files in place. Herdr reloads the mod at once; your layout, keys, comments and Viewed marks stay as they are.
+
+```sh
+git clone https://github.com/fgiova/herdr-agent-review.git /tmp/herdr-agent-review
+cp /tmp/herdr-agent-review/mods/agent-review/* ~/.config/herdr-app/mods/agent-review/
+herdr-app check ~/.config/herdr-app/mods/agent-review
+```
+
+Or ask your Herdr agent: *"Update my installed agent-review mod in place from https://github.com/fgiova/herdr-agent-review"*. Say "in place": by default an agent installs a mod under a new name rather than overwrite one you have.
 
 ## Uninstall
 
