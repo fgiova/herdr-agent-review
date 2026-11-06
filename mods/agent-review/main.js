@@ -55,7 +55,12 @@ export default class Review extends View {
 
   // Diff pane: {view: "diff", root}. Rows are a flat list of items (file | sep | row) for one virtual list.
   initDiff(props, cx) {
-    this.view = "diff"; this.root = props.root; this.on = props.on ?? null; this.files = []; this.items = []; this.sizes = []; this.gen = 0; this.wd = new Map();
+    // Panes opened before `on` was passed: the machine of a terminal inside root (remote pane ids are "machine/…").
+    const inRoot = props.root && panes().find(p => p.cwd && (p.cwd === props.root || p.cwd.startsWith(`${props.root}/`)));
+    this.view = "diff"; this.root = props.root;
+    this.on = props.on !== undefined ? props.on : inRoot?.pane.includes("/") ? inRoot.pane.split("/")[0] : inRoot ? null : location().on;
+    this.files = []; this.items = []; this.sizes = []; this.gen = 0; this.wd = new Map();
+    this.sx = 0; this.maxChars = 0;
     this.scroll = VirtualListScrollHandle.new(); this.fh = cx.focus_handle(); this.textW = 0; this.composer = null; this.sel = null; this.flip = new Map();
     this.ta = TextareaState.new({ placeholder: "Comment…", rows: 4 });
     this.ta.on("submit", (e, cx) => e.secondary && this.saveComposer(cx));
@@ -110,7 +115,7 @@ export default class Review extends View {
 
   // Flat list: file | sep | row, each row followed by the threads anchored to it (comment items) and the open composer.
   build(st, key) {
-    this.built = key; this.items = []; this.sizes = [];
+    this.built = key; this.items = []; this.sizes = []; this.maxChars = 0;
     const scope = st.scope ?? null, comp = this.composer, push = (it, size) => { this.items.push(it); this.sizes.push(it.h = size); };
     const clip = (s) => s && { ...s, text: (s.text.length > 4000 ? s.text.slice(0, 4000) + "…" : s.text).replace(/\t/g, "    ") };
     const wrap = (text, cols) => String(text).split("\n").flatMap(p => {
@@ -144,6 +149,7 @@ export default class Review extends View {
       push({ kind: "file", key: f.path, file: f.path, f, shut: this.shut(f, st) }, 32);
       if (this.items.at(-1).shut) continue;
       for (const r of rows) {
+        if (r.kind === "row") this.maxChars = Math.max(this.maxChars, r.left?.text.length ?? 0, r.right?.text.length ?? 0);
         push({ ...r, file: f.path }, r.kind === "sep" ? 22 : 20);
         for (const th of near[r.key] ?? []) thread(th);
         if (comp?.row === r.key) composer(comp.side);
@@ -197,10 +203,12 @@ export default class Review extends View {
     const { left: l, right: r } = it, k = l?.type === "-" && r?.type === "+" && `${l.text}\0${r.text}`;
     let w = k && this.wd.get(k);
     if (k && !w) this.wd.set(k, w = wordDiff(l.text, r.text));
+    // Code scrolls sideways by this.sx (both sides together); line numbers stay put.
     const cell = (s, segs, bg, hi) => h_flex().flex_1().min_w(0).h_full().gap(8).bg(!s ? t.chrome : s.type === " " ? t.background : bg)
       .child(div().w(40).flex_none().text_right().text_color(t.dim).child(s ? String(s.no) : ""))
-      .child(!s ? div() : segs ? h_flex().flex_1().min_w(0).overflow_hidden().children(segs.map(([x, c]) => div().flex_none().whitespace_nowrap().when(c, e => e.bg(hi)).child(x)))
-        : div().flex_1().min_w(0).truncate().child(s.text));
+      .child(!s ? div() : h_flex().flex_1().min_w(0).h_full().items_center().overflow_hidden()
+        .child(segs ? h_flex().flex_none().ml(-this.sx).children(segs.map(([x, c]) => div().flex_none().whitespace_nowrap().when(c, e => e.bg(hi)).child(x)))
+          : div().flex_none().ml(-this.sx).whitespace_nowrap().child(s.text)));
     return h_flex().w_full().h(20)
       .child(cell(l, w?.a, t.ansi1 + "18", t.ansi1 + "40"))
       .child(div().w(1).h_full().flex_none().bg(t.border))
@@ -227,12 +235,23 @@ export default class Review extends View {
         .when(Boolean(scope), e => e.child(div().px(4).rounded(4).border_1().border_color(t.border).text_size(10).text_color(t.accent).child(`only ${scope}`)))
         .child(div().flex_1())
         .child(div().text_size(11).text_color(t.dim).child(`${count} ${count === 1 ? "file" : "files"}`)))
-      .child(div().flex_1().min_h(0).relative().on_mouse_down("left", (e) => { this.down = e.local_position.x > (e.bounds?.width ?? this.paneW ?? Infinity) - VIEWED_W; }).font_family(settings().font_family ?? "JetBrains Mono").text_size(12)
+      .child(div().flex_1().min_h(0).relative().on_mouse_down("left", (e) => { this.down = e.local_position.x > (e.bounds?.width ?? this.paneW ?? Infinity) - VIEWED_W; })
+        .on_scroll_wheel((e, cx) => this.scrollX(e, cx)).font_family(settings().font_family ?? "JetBrains Mono").text_size(12)
         .child(v_virtual_list("review-diff-list", this.items.length, this.sizes, (i) => this.items[i].key,
           (range) => this.items.slice(range.start, range.end).map(it => this.diffItem(it, t, st))).track_scroll(this.scroll).size_full()
           .on_item_click((key, cx) => this.itemClick(key, null, cx)).on_item_secondary_click((key, e, cx) => this.itemClick(key, e, cx)))
         .child(Scrollbar.vertical("review-diff-list").viewport_from_layout().absolute().inset_0())
         .when(Boolean(status), e => e.child(div().absolute().top(8).px(12).text_color(this.error ? t.blocked : t.dim).child(status))));
+  }
+
+  // Sideways: a horizontal swipe, or shift + wheel. Vertical scrolling stays with the list.
+  // ponytail: width from the longest line at ~7.2 px per char (12 px mono); measure if fonts vary.
+  scrollX(e, cx) {
+    const dx = e.modifiers?.shift && !e.delta.x ? e.delta.y : e.delta.x;
+    if (!dx || (!e.modifiers?.shift && Math.abs(dx) < Math.abs(e.delta.y))) return;
+    const max = Math.max(0, Math.ceil(this.maxChars * 7.2) - (this.textW || 0) + 16);
+    const sx = Math.min(max, Math.max(0, this.sx - dx));
+    if (sx !== this.sx) { this.sx = sx; cx.notify(); }
   }
 
   // Click on a row: comment on the new side (old if the row has only that); right click: the side under the pointer.
