@@ -15,6 +15,7 @@ const key = () => JSON.stringify(location());
 const base = (p) => p.split("/").pop();
 // Viewed holds while the file's "index a..b" line is the one saved.
 const fp = (f) => f.index ?? "-";
+const PLUS_W = 16; // the "+" column at the left of each side's line numbers
 const VIEWED_W = 90; // right end of a diff file header: the Viewed checkbox
 // Uncommitted changes vs HEAD (empty tree without commits) plus untracked files, as one unified diff.
 // The flags keep git from writing under .git, or the folder watch would trigger itself.
@@ -134,13 +135,25 @@ export default class Review extends View {
     };
     const byFile = {};
     for (const th of this.threads()) (byFile[th[0].file] ??= []).push(th);
+    // Rows only change with the diff: built once per file and generation, so a rebuild (comment, selection) stays cheap.
+    if (this.rowsGen !== this.gen) { this.rowsGen = this.gen; this.rowCache = new Map(); }
     for (const f of this.files) {
       if (scope && f.path !== scope) continue;
-      const rows = f.blocks.flatMap((h, hi) => [{ kind: "sep", key: `${f.path}#${hi}`, text: h.header },
-        ...pairSplit(h).map((p, ri) => ({ kind: "row", key: `${f.path}#${hi}.${ri}`, left: clip(p.left), right: clip(p.right) }))]);
-      if (rows.length > 1500) rows.splice(1500, Infinity, { kind: "sep", key: `${f.path}#cut`, text: `… ${rows.length - 1500} more lines not shown` });
-      const lines = { old: new Map(), new: new Map() }, near = {}, orphans = [];
-      for (const r of rows) if (r.kind === "row") { if (r.left) lines.old.set(r.left.no, r); if (r.right) lines.new.set(r.right.no, r); }
+      let fr = this.rowCache.get(f.path);
+      if (!fr) {
+        const rows = f.blocks.flatMap((h, hi) => [{ kind: "sep", key: `${f.path}#${hi}`, file: f.path, text: h.header, h: 22 },
+          ...pairSplit(h).map((p, ri) => ({ kind: "row", key: `${f.path}#${hi}.${ri}`, file: f.path, left: clip(p.left), right: clip(p.right), h: 20 }))]);
+        if (rows.length > 1500) rows.splice(1500, Infinity, { kind: "sep", key: `${f.path}#cut`, file: f.path, text: `… ${rows.length - 1500} more lines not shown`, h: 22 });
+        const lines = { old: new Map(), new: new Map() };
+        let maxc = 0;
+        for (const r of rows) if (r.kind === "row") {
+          if (r.left) lines.old.set(r.left.no, r);
+          if (r.right) lines.new.set(r.right.no, r);
+          maxc = Math.max(maxc, r.left?.text.length ?? 0, r.right?.text.length ?? 0);
+        }
+        this.rowCache.set(f.path, fr = { rows, lines, maxc });
+      }
+      const { rows, lines } = fr, near = {}, orphans = [];
       for (const th of byFile[f.path] ?? []) {
         const r = anchor(th[0], lines);
         r ? (near[r.key] ??= []).push(th) : orphans.push(th);
@@ -148,9 +161,9 @@ export default class Review extends View {
       delete byFile[f.path];
       push({ kind: "file", key: f.path, file: f.path, f, shut: this.shut(f, st) }, 32);
       if (this.items.at(-1).shut) continue;
+      this.maxChars = Math.max(this.maxChars, fr.maxc);
       for (const r of rows) {
-        if (r.kind === "row") this.maxChars = Math.max(this.maxChars, r.left?.text.length ?? 0, r.right?.text.length ?? 0);
-        push({ ...r, file: f.path }, r.kind === "sep" ? 22 : 20);
+        this.items.push(r); this.sizes.push(r.h);
         for (const th of near[r.key] ?? []) thread(th);
         if (comp?.row === r.key) composer(comp.side);
       }
@@ -177,12 +190,13 @@ export default class Review extends View {
         .child(h_flex().h(18).gap(6).items_center().text_size(11)
           .child(div().flex_none().font_semibold().text_color(agent ? t.accent : t.dim).child(user ? "you" : c.author ?? c.source))
           .when(it.orphan && !it.depth, e => e.child(div().flex_none().text_color(t.dim).child(`${c.file}:${c.line}`)))
+          .when(Boolean(c.end) && !it.depth, e => e.child(div().flex_none().text_color(t.dim).child(`lines ${c.line}–${c.end}`)))
           .when(user && !c.sent, e => e.child(div().flex_none().text_color(t.blocked).child("unsent")))
           .child(div().flex_1().min_w(0).truncate().text_right().text_color(t.dim).child(!sel ? "" : user ? "r reply · e edit · d delete" : "r reply")))
         .children(it.lines.map(l => div().h(18).whitespace_nowrap().overflow_hidden().child(l || " "))), it.h);
     }
     if (it.kind === "composer") {
-      const c = this.composer, what = c.editId ? "Edit" : c.parentId ? "Reply" : `New comment, line ${c.line}${c.side === "old" ? " (old)" : ""}`;
+      const c = this.composer, what = c.editId ? "Edit" : c.parentId ? "Reply" : `New comment, ${c.end ? `lines ${c.line}–${c.end}` : `line ${c.line}`}${c.side === "old" ? " (old)" : ""}${c.end ? "" : " · shift-click a line for a range"}`;
       return half(it.side, v_flex().ml(48).mr(8).p(4).gap(4).rounded(4).border_1().border_color(t.accent).bg(t.raised)
         .child(div().h(18).text_size(11).text_color(t.dim).truncate().child(`${what} · cmd-enter save · esc cancel`))
         .child(Textarea.new(this.ta).h(80)), it.h);
@@ -204,15 +218,21 @@ export default class Review extends View {
     let w = k && this.wd.get(k);
     if (k && !w) this.wd.set(k, w = wordDiff(l.text, r.text));
     // Code scrolls sideways by this.sx (both sides together); line numbers stay put.
-    const cell = (s, segs, bg, hi) => h_flex().flex_1().min_w(0).h_full().gap(8).bg(!s ? t.chrome : s.type === " " ? t.background : bg)
+    const all = st.comments ?? {}, cp = this.composer, picked = cp?.file && !cp.editId && !cp.parentId ? cp : this.sel && all[this.sel] && this.rootOf(all[this.sel], all);
+    const span = picked?.file === it.file ? picked : null, inSpan = (s, side) => span && s && span.side === side && s.no >= span.line && s.no <= (span.end ?? span.line);
+    const cell = (s, segs, bg, hi, side) => h_flex().flex_1().min_w(0).h_full().gap(8).bg(!s ? t.chrome : s.type === " " ? t.background : bg)
+      .when(Boolean(inSpan(s, side)), e => e.bg(t.accent + "30"))
+      .child(div().w(PLUS_W).flex_none().flex().items_center().justify_center().opacity(s ? 1 : 0)
+        .child(div().size(13).flex().items_center().justify_center().rounded(3).text_size(11).font_bold()
+          .bg(inSpan(s, side) ? t.accent : t.accent + "33").text_color(inSpan(s, side) ? t.accent_foreground : t.accent).child("+")))
       .child(div().w(40).flex_none().text_right().text_color(t.dim).child(s ? String(s.no) : ""))
       .child(!s ? div() : h_flex().flex_1().min_w(0).h_full().items_center().overflow_hidden()
         .child(segs ? h_flex().flex_none().ml(-this.sx).children(segs.map(([x, c]) => div().flex_none().whitespace_nowrap().when(c, e => e.bg(hi)).child(x)))
           : div().flex_none().ml(-this.sx).whitespace_nowrap().child(s.text)));
     return h_flex().w_full().h(20)
-      .child(cell(l, w?.a, t.ansi1 + "18", t.ansi1 + "40"))
+      .child(cell(l, w?.a, t.ansi1 + "18", t.ansi1 + "40", "old"))
       .child(div().w(1).h_full().flex_none().bg(t.border))
-      .child(cell(r, w?.b, t.ansi2 + "18", t.ansi2 + "40"));
+      .child(cell(r, w?.b, t.ansi2 + "18", t.ansi2 + "40", "new"));
   }
 
   renderDiff() {
@@ -235,7 +255,7 @@ export default class Review extends View {
         .when(Boolean(scope), e => e.child(div().px(4).rounded(4).border_1().border_color(t.border).text_size(10).text_color(t.accent).child(`only ${scope}`)))
         .child(div().flex_1())
         .child(div().text_size(11).text_color(t.dim).child(`${count} ${count === 1 ? "file" : "files"}`)))
-      .child(div().flex_1().min_h(0).relative().on_mouse_down("left", (e) => { this.down = e.local_position.x > (e.bounds?.width ?? this.paneW ?? Infinity) - VIEWED_W; })
+      .child(div().flex_1().min_h(0).relative().on_mouse_down("left", (e) => { this.shift = e.modifiers?.shift; this.downX = e.local_position.x; this.down = e.local_position.x > (e.bounds?.width ?? this.paneW ?? Infinity) - VIEWED_W; })
         .on_scroll_wheel((e, cx) => this.scrollX(e, cx)).font_family(settings().font_family ?? "JetBrains Mono").text_size(12)
         .child(v_virtual_list("review-diff-list", this.items.length, this.sizes, (i) => this.items[i].key,
           (range) => this.items.slice(range.start, range.end).map(it => this.diffItem(it, t, st))).track_scroll(this.scroll).size_full()
@@ -274,10 +294,31 @@ export default class Review extends View {
       return;
     }
     if (it.kind !== "row") return;
-    let side = e ? ((e.local_position?.x ?? 0) < (e.bounds?.width ?? 0) / 2 ? "old" : "new") : "new";
+    const half = ((this.paneW ?? 0) - 1) / 2, x = this.downX ?? -1, plus = !e && (x >= 0 && x < PLUS_W || x >= half && x < half + 1 + PLUS_W);
+    let side = e ? ((e.local_position?.x ?? 0) < (e.bounds?.width ?? 0) / 2 ? "old" : "new") : plus ? (x < half ? "old" : "new") : "new";
     if (!(side === "old" ? it.left : it.right)) side = side === "old" ? "new" : "old";
-    const s = side === "old" ? it.left : it.right;
+    const s = side === "old" ? it.left : it.right, a = this.anchorAt, c = this.composer;
+    // Shift-click, or a click on a second "+", on the same file and side stretches the open new comment over a range.
+    if (!e && (this.shift || plus) && a && c && !c.editId && !c.parentId && a.file === it.file && a.side === side) {
+      const at = (x) => side === "old" ? x.left : x.right, nos = this.items.filter(x => x.kind === "row" && x.file === a.file && at(x)).map(x => at(x).no);
+      const to = this.spanTo ?? a.no, dir = Math.sign(to - a.no);
+      // "+" on an end of the selection drops that line; on the only line, it closes the comment.
+      if (plus && s.no === to) return to === a.no ? this.closeComposer(cx) : this.span(nos[nos.indexOf(to) - dir], cx);
+      if (plus && s.no === a.no) { this.anchorAt = { ...a, no: nos[nos.indexOf(a.no) + dir] }; return this.span(to, cx); }
+      return this.span(s.no, cx);
+    }
+    this.anchorAt = { file: it.file, side, no: s.no }; this.spanTo = s.no;
     this.openComposer(cx, { file: it.file, side, line: s.no, ctx: s.text, row: it.key });
+  }
+
+  // The open new comment covers the lines from anchorAt to `to` (one file and side) and sits under the last one.
+  span(to, cx) {
+    const { file, side, no } = this.anchorAt, lo = Math.min(no, to), hi = Math.max(no, to), at = (x) => side === "old" ? x.left : x.right;
+    const rows = this.items.filter(x => x.kind === "row" && x.file === file && at(x) && at(x).no >= lo && at(x).no <= hi), last = rows.at(-1);
+    if (!last) return;
+    this.spanTo = to;
+    this.composer = { ...this.composer, line: lo, end: hi > lo ? hi : undefined, ctx: at(last).text, row: last.key, code: hi > lo ? rows.slice(0, 80).map(x => at(x).text) : undefined };
+    cx.notify();
   }
 
   // One composer at a time: {row} for a new comment under a row, {after: root id} to reply to or edit a thread.
@@ -302,6 +343,13 @@ export default class Review extends View {
   diffKey(e, cx) {
     if (e.keystroke === "escape") { if (this.composer) this.closeComposer(cx); else if (this.sel) { this.sel = null; cx.notify(); } return; }
     if (e.keystroke === "cmd-enter") return this.composer && this.saveComposer(cx);
+    const k = this.composer, a = this.anchorAt;
+    if ((e.keystroke === "shift-down" || e.keystroke === "shift-up") && k && !k.editId && !k.parentId && a?.file === k.file) {
+      const at = (x) => a.side === "old" ? x.left : x.right, nos = this.items.filter(x => x.kind === "row" && x.file === a.file && at(x)).map(x => at(x).no);
+      const next = nos[nos.indexOf(this.spanTo ?? a.no) + (e.keystroke === "shift-down" ? 1 : -1)];
+      if (next != null) this.span(next, cx);
+      return cx.stop_propagation();
+    }
     const c = !this.composer && this.sel && (this.store().comments ?? {})[this.sel];
     if (!c) return;
     if (e.keystroke === "r") this.openComposer(cx, { reply: c });
@@ -311,10 +359,10 @@ export default class Review extends View {
 
   // Comment store helpers. Each write re-reads the store first: the sidebar writes it too.
   setComments(fn) { const st = this.store(); this.save({ ...st, comments: fn({ ...st.comments }) }); }
-  addComment({ file, side, line, ctx, parentId, text }) {
+  addComment({ file, side, line, end, code, ctx, parentId, text }) {
     const id = `user:${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
     this.setComments(all => ({ ...all, [id]: { id, source: "user", author: "user", file, side, line, text,
-      at: new Date().toISOString(), parentId: parentId ?? null, sent: false, ...(ctx == null ? {} : { ctx }) } }));
+      at: new Date().toISOString(), parentId: parentId ?? null, sent: false, ...(ctx == null ? {} : { ctx }), ...(end ? { end, code } : {}) } }));
     return id;
   }
   editComment(id, text) { this.setComments(all => all[id] ? { ...all, [id]: { ...all[id], text, sent: false } } : all); }

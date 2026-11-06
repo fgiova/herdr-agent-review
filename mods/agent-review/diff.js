@@ -56,7 +56,7 @@ const tokenize = (s) => s.match(/\w+|\s+|[^\w\s]/g) ?? [];
 export function wordDiff(a, b) {
   const ta = tokenize(a), tb = tokenize(b), n = ta.length, m = tb.length;
   const whole = (s, changed) => (s ? [[s, changed]] : []);
-  // ponytail: O(n*m) LCS, Myers se servono righe lunghe
+  // ponytail: O(n*m) LCS, Myers if long lines are needed
   if (n > 400 || m > 400) return { a: whole(a, false), b: whole(b, false) };
   const L = Array.from({ length: n + 1 }, () => new Uint16Array(m + 1));
   for (let i = n - 1; i >= 0; i--)
@@ -77,10 +77,10 @@ export function wordDiff(a, b) {
 // at creation (ctx), else the nearest line with that text; undefined = orphan. Comments without ctx (older ones) keep their number.
 // ponytail: exact match only, the nearest duplicate wins; fuzzy match if anchors drift on real edits.
 export function anchor(c, lines) {
-  const side = c.side === "old" ? "old" : "new", m = lines[side], at = m.get(c.line), text = (r) => (side === "old" ? r.left : r.right).text;
+  const side = c.side === "old" ? "old" : "new", m = lines[side], ln = c.end ?? c.line, at = m.get(ln), text = (r) => (side === "old" ? r.left : r.right).text;
   if (c.ctx == null || (at && text(at) === c.ctx)) return at;
   let best;
-  for (const [no, r] of m) if (text(r) === c.ctx && (!best || Math.abs(no - c.line) < Math.abs(best[0] - c.line))) best = [no, r];
+  for (const [no, r] of m) if (text(r) === c.ctx && (!best || Math.abs(no - ln) < Math.abs(best[0] - ln))) best = [no, r];
   return best?.[1];
 }
 
@@ -113,7 +113,8 @@ export function reviewMessage(root, file, threads, ids) {
   for (const f of [...new Set(threads.map(t => t[0].file))]) {
     lines.push("", `## ${f}`);
     for (const [r, ...replies] of threads.filter(t => t[0].file === f)) {
-      lines.push(`- ${f}:${r.line} [thread ${r.id}] — ${indent(r.text)}`);
+      lines.push(`- ${f}:${r.line}${r.end ? `-${r.end}` : ""}${r.side === "old" ? " (old side)" : ""} [thread ${r.id}] — ${indent(r.text)}`);
+      if (r.code?.length) lines.push("    ```", ...r.code.map(l => `    ${l}`), "    ```");
       for (const c of replies) lines.push(`  ${c.source === "user" ? "user" : c.author}${ids.has(c.id) ? " (new)" : ""}: ${indent(c.text)}`);
     }
   }
