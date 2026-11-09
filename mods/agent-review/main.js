@@ -3,6 +3,7 @@ import { View, div } from "gpui-kit";
 import { v_flex, h_flex, v_virtual_list, VirtualListScrollHandle, Scrollbar, Textarea, TextareaState } from "gpui-base";
 import { spaces, panes, agents, focused, exec, theme, shared, setShared, settings, watchFolder, readTextFile, writeTextFile, props } from "herdr";
 import { parseUnified, pairSplit, wordDiff, anchor, mergeAgent, reviewMessage } from "./diff.js";
+import { annotate, mergeChanged, SYNTAX } from "./highlight.js";
 
 function location() {
   const space = spaces().find((s) => s.active), f = focused(), ps = panes();
@@ -80,7 +81,7 @@ export default class Review extends View {
         if (root !== this.root) return; // the sidebar moved to another repo meanwhile
         if (r.code !== 0) throw new Error(r.code === 2 ? "Not a git repository" : r.stderr.trim() || `git: exit ${r.code}`);
         this.error = null;
-        if (r.stdout !== this.raw) { this.raw = r.stdout; this.files = parseUnified(r.stdout.slice(r.stdout.indexOf("\n") + 1)); this.wd = new Map(); this.gen++; }
+        if (r.stdout !== this.raw) { this.raw = r.stdout; this.files = parseUnified(r.stdout.slice(r.stdout.indexOf("\n") + 1)); for (const f of this.files) annotate(f.blocks, f.path); this.wd = new Map(); this.gen++; }
         this.prune(r.stdout.slice(0, r.stdout.indexOf("\n")));
         this.watch(cx);
         await this.takeAgent();
@@ -227,8 +228,8 @@ export default class Review extends View {
           .bg(inSpan(s, side) ? t.accent : t.accent + "33").text_color(inSpan(s, side) ? t.accent_foreground : t.accent).child("+")))
       .child(div().w(40).flex_none().text_right().text_color(t.dim).child(s ? String(s.no) : ""))
       .child(!s ? div() : h_flex().flex_1().min_w(0).h_full().items_center().overflow_hidden()
-        .child(segs ? h_flex().flex_none().ml(-this.sx).children(segs.map(([x, c]) => div().flex_none().whitespace_nowrap().when(c, e => e.bg(hi)).child(x)))
-          : div().flex_none().ml(-this.sx).whitespace_nowrap().child(s.text)));
+        .child(h_flex().flex_none().ml(-this.sx).children(mergeChanged(s.tok ?? [[s.text, null]], segs).map(([x, kind, c]) =>
+          div().flex_none().whitespace_nowrap().when(Boolean(kind), e => e.text_color(t[SYNTAX[kind]])).when(c, e => e.bg(hi)).child(x.replace(/\t/g, "    "))))));
     return h_flex().w_full().h(20)
       .child(cell(l, w?.a, t.ansi1 + "18", t.ansi1 + "40", "old"))
       .child(div().w(1).h_full().flex_none().bg(t.border))

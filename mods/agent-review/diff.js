@@ -36,16 +36,16 @@ export function parseUnified(text) {
 export function pairSplit(block) {
   const out = [];
   let dels = [], adds = [];
-  const side = (r, no) => ({ no, text: r.text, type: r.type });
+  const side = (r, no, tok) => ({ no, text: r.text, type: r.type, tok });
   const flush = () => {
     for (let i = 0; i < Math.max(dels.length, adds.length); i++)
-      out.push({ left: dels[i] ? side(dels[i], dels[i].oldNo) : null, right: adds[i] ? side(adds[i], adds[i].newNo) : null });
+      out.push({ left: dels[i] ? side(dels[i], dels[i].oldNo, dels[i].ot) : null, right: adds[i] ? side(adds[i], adds[i].newNo, adds[i].nt) : null });
     dels = []; adds = [];
   };
   for (const r of block.rows) {
     if (r.type === "-") { if (adds.length) flush(); dels.push(r); }
     else if (r.type === "+") adds.push(r);
-    else { flush(); out.push({ left: side(r, r.oldNo), right: side(r, r.newNo) }); }
+    else { flush(); out.push({ left: side(r, r.oldNo, r.ot), right: side(r, r.newNo, r.nt) }); }
   }
   flush();
   return out;

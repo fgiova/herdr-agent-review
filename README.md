@@ -1,6 +1,6 @@
 # Agent Review — a Herdr mod
 
-GitLab-style code review of the uncommitted changes in a git repo, made for reviewing what a Claude Code agent just wrote. A side panel lists the changed files as a folder tree; a pane next to your terminals shows a side-by-side diff with word-level highlights, inline comment threads and a "Viewed" checkbox per file, which folds the files you have checked, like on GitLab. "Send review" sends every unsent comment to the space's Claude Code agent as one message, and the agent's replies show up under the same lines.
+GitLab-style code review of the uncommitted changes in a git repo, made for reviewing what a Claude Code agent just wrote. A side panel lists the changed files as a folder tree; a pane next to your terminals shows a side-by-side diff with syntax colors and word-level highlights, inline comment threads and a "Viewed" checkbox per file, which folds the files you have checked, like on GitLab. "Send review" sends every unsent comment to the space's Claude Code agent as one message, and the agent's replies show up under the same lines.
 
 ![Agent Review](preview.png)
 
@@ -83,6 +83,7 @@ Comments and "Viewed" marks are kept per repo and survive restarts. A file's "Vi
 
 - Repos on another machine refresh every 10 seconds instead of on file changes.
 - Up to 1500 diff rows per file and 4000 characters per line. Word highlighting is off for lines with more than 400 tokens per side.
+- Syntax colors come from your theme and are picked by file extension: JS/TS and the other C-family languages, PHP, Python, Ruby, shell, SQL, GraphQL, CSS, JSON, YAML, TOML, HTML/XML/Vue and Markdown; other files are shown plain. It is a light highlighter, not a full parser: strings spanning several lines (template literals, heredocs, triple quotes) are colored only on their first line, and code nested in another language (scripts and styles in HTML or Vue) isn't colored.
 - File paths that git quotes (unusual characters) aren't parsed.
 - Comments are re-anchored by exact text match: after an edit, threads whose line changed are listed at the end of their file. A range is re-anchored by its last line; its `lines a–b` label keeps the original numbers.
 - Selections are whole lines, made with clicks or keys: Herdr doesn't report pointer drags over diff rows, so dragging across lines doesn't select them. The code sent with a range stops at 80 lines.
@@ -107,7 +108,7 @@ Remove `~/.config/herdr-app/mods/agent-review`, the `agent-review` block from yo
 
 ## Development
 
-`node mods/agent-review/diff.js` runs the self-test of the diff parser; it prints `ok`. [`RECIPE.md`](RECIPE.md) describes the mod in full, so it can be rebuilt from scratch.
+`node mods/agent-review/diff.js` and `node mods/agent-review/highlight.js` run the self-tests of the diff parser and the syntax highlighter; each prints `ok`. [`RECIPE.md`](RECIPE.md) describes the mod in full, so it can be rebuilt from scratch.
 
 ## License
 
