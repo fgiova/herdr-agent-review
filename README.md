@@ -69,7 +69,7 @@ In Herdr, ask an agent: *"Install the Herdr mod from https://github.com/fgiova/h
 
 1. In a space whose terminal is inside a git repo with uncommitted changes, show the Agent Review panel and click **Open diff**: the diff opens as a pane, zoomed and focused.
 2. Tick **Viewed** at the right of a file's header to fold it and mark it in the panel. Click elsewhere on a header to fold or unfold that file.
-3. Click a line to comment on it; `cmd-enter` saves, `esc` cancels. Right-click comments on the side under the pointer.
+3. Click a line to comment on it; `ctrl-s` saves, `esc` cancels. Right-click comments on the side under the pointer.
    - To comment on several lines, click the **+** at the left of a line number to start, then the **+** of another line on the same side to stretch the selection to it. Shift-click and `shift-↑`/`shift-↓` do the same. A **+** at either end of the selection drops that line; on a single selected line it closes the comment.
    - The selected lines are highlighted; the comment sits under the last one and is sent to the agent as `file:12-18` together with the selected code.
 4. Click a comment to select it: `r` replies, `e` edits, `d` deletes.

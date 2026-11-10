@@ -65,7 +65,6 @@ export default class Review extends View {
     this.sx = 0; this.maxChars = 0;
     this.scroll = VirtualListScrollHandle.new(); this.fh = cx.focus_handle(); this.textW = 0; this.composer = null; this.sel = null; this.flip = new Map();
     this.ta = TextareaState.new({ placeholder: "Comment…", rows: 4 });
-    this.ta.on("submit", (e, cx) => e.secondary && this.saveComposer(cx));
     this.gotoN = Date.now() - 5000; // a goto set just before this pane opened still applies
     this.loadDiff(cx);
     cx.timer.every(10000, (cx) => this.loadDiff(cx));
@@ -199,7 +198,7 @@ export default class Review extends View {
     if (it.kind === "composer") {
       const c = this.composer, what = c.editId ? "Edit" : c.parentId ? "Reply" : `New comment, ${c.end ? `lines ${c.line}–${c.end}` : `line ${c.line}`}${c.side === "old" ? " (old)" : ""}${c.end ? "" : " · shift-click a line for a range"}`;
       return half(it.side, v_flex().ml(48).mr(8).p(4).gap(4).rounded(4).border_1().border_color(t.accent).bg(t.raised)
-        .child(div().h(18).text_size(11).text_color(t.dim).truncate().child(`${what} · cmd-enter save · esc cancel`))
+        .child(div().h(18).text_size(11).text_color(t.dim).truncate().child(`${what} · ctrl-s save · esc cancel`))
         .child(Textarea.new(this.ta).h(80)), it.h);
     }
     if (it.kind === "file") {
@@ -343,7 +342,7 @@ export default class Review extends View {
 
   diffKey(e, cx) {
     if (e.keystroke === "escape") { if (this.composer) this.closeComposer(cx); else if (this.sel) { this.sel = null; cx.notify(); } return; }
-    if (e.keystroke === "cmd-enter") return this.composer && this.saveComposer(cx);
+    if (e.keystroke === "ctrl-s") return this.composer && this.saveComposer(cx);
     const k = this.composer, a = this.anchorAt;
     if ((e.keystroke === "shift-down" || e.keystroke === "shift-up") && k && !k.editId && !k.parentId && a?.file === k.file) {
       const at = (x) => a.side === "old" ? x.left : x.right, nos = this.items.filter(x => x.kind === "row" && x.file === a.file && at(x)).map(x => at(x).no);
