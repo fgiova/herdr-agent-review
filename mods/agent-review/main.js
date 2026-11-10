@@ -2,7 +2,7 @@
 import { View, div } from "gpui-kit";
 import { v_flex, h_flex, v_virtual_list, VirtualListScrollHandle, Scrollbar, Textarea, TextareaState } from "gpui-base";
 import { spaces, panes, agents, focused, exec, theme, shared, setShared, settings, watchFolder, readTextFile, writeTextFile, props } from "herdr";
-import { parseUnified, pairSplit, wordDiff, anchor, mergeAgent, reviewMessage } from "./diff.js";
+import { parseUnified, capRows, pairSplit, wordDiff, anchor, mergeAgent, reviewMessage } from "./diff.js";
 import { annotate, mergeChanged, SYNTAX } from "./highlight.js";
 
 function location() {
@@ -16,6 +16,9 @@ const key = () => JSON.stringify(location());
 const base = (p) => p.split("/").pop();
 // Viewed holds while the file's "index a..b" line is the one saved.
 const fp = (f) => f.index ?? "-";
+// ponytail: per-file and whole-list caps keep a huge diff renderable (the virtual list takes at most 10000 items).
+const MAX_FILE_ROWS = 1500;
+const MAX_ITEMS = 9000;
 const PLUS_W = 16; // the "+" column at the left of each side's line numbers
 const VIEWED_W = 90; // right end of a diff file header: the Viewed checkbox
 // Uncommitted changes vs HEAD (empty tree without commits) plus untracked files, as one unified diff.
@@ -80,7 +83,7 @@ export default class Review extends View {
         if (root !== this.root) return; // the sidebar moved to another repo meanwhile
         if (r.code !== 0) throw new Error(r.code === 2 ? "Not a git repository" : r.stderr.trim() || `git: exit ${r.code}`);
         this.error = null;
-        if (r.stdout !== this.raw) { this.raw = r.stdout; this.files = parseUnified(r.stdout.slice(r.stdout.indexOf("\n") + 1)); for (const f of this.files) annotate(f.blocks, f.path); this.wd = new Map(); this.gen++; }
+        if (r.stdout !== this.raw) { this.raw = r.stdout; this.files = parseUnified(r.stdout.slice(r.stdout.indexOf("\n") + 1)); for (const f of this.files) { f.cut = capRows(f, MAX_FILE_ROWS); annotate(f.blocks, f.path); } this.wd = new Map(); this.gen++; }
         this.prune(r.stdout.slice(0, r.stdout.indexOf("\n")));
         this.watch(cx);
         await this.takeAgent();
@@ -117,7 +120,7 @@ export default class Review extends View {
   // Flat list: file | sep | row, each row followed by the threads anchored to it (comment items) and the open composer.
   build(st, key) {
     this.built = key; this.items = []; this.sizes = []; this.maxChars = 0;
-    const scope = st.scope ?? null, comp = this.composer, push = (it, size) => { this.items.push(it); this.sizes.push(it.h = size); };
+    const scope = st.scope ?? null, comp = this.composer, push = (it, size) => { if (this.items.length < 9999) { this.items.push(it); this.sizes.push(it.h = size); } };
     const clip = (s) => s && { ...s, text: (s.text.length > 4000 ? s.text.slice(0, 4000) + "…" : s.text).replace(/\t/g, "    ") };
     const wrap = (text, cols) => String(text).split("\n").flatMap(p => {
       const out = [];
@@ -139,11 +142,13 @@ export default class Review extends View {
     if (this.rowsGen !== this.gen) { this.rowsGen = this.gen; this.rowCache = new Map(); }
     for (const f of this.files) {
       if (scope && f.path !== scope) continue;
+      push({ kind: "file", key: f.path, file: f.path, f, shut: this.shut(f, st) }, 32);
+      if (this.items.at(-1).shut) { delete byFile[f.path]; continue; }
       let fr = this.rowCache.get(f.path);
       if (!fr) {
         const rows = f.blocks.flatMap((h, hi) => [{ kind: "sep", key: `${f.path}#${hi}`, file: f.path, text: h.header, h: 22 },
           ...pairSplit(h).map((p, ri) => ({ kind: "row", key: `${f.path}#${hi}.${ri}`, file: f.path, left: clip(p.left), right: clip(p.right), h: 20 }))]);
-        if (rows.length > 1500) rows.splice(1500, Infinity, { kind: "sep", key: `${f.path}#cut`, file: f.path, text: `… ${rows.length - 1500} more lines not shown`, h: 22 });
+        if (f.cut) rows.push({ kind: "sep", key: `${f.path}#cut`, file: f.path, text: `… ${f.cut} more lines not shown`, h: 22 });
         const lines = { old: new Map(), new: new Map() };
         let maxc = 0;
         for (const r of rows) if (r.kind === "row") {
@@ -159,14 +164,15 @@ export default class Review extends View {
         r ? (near[r.key] ??= []).push(th) : orphans.push(th);
       }
       delete byFile[f.path];
-      push({ kind: "file", key: f.path, file: f.path, f, shut: this.shut(f, st) }, 32);
-      if (this.items.at(-1).shut) continue;
       this.maxChars = Math.max(this.maxChars, fr.maxc);
-      for (const r of rows) {
+      const room = Math.max(0, MAX_ITEMS - this.items.length);
+      rows.forEach((r, i) => {
+        if (i >= room) return orphans.push(...(near[r.key] ?? []));
         this.items.push(r); this.sizes.push(r.h);
         for (const th of near[r.key] ?? []) thread(th);
         if (comp?.row === r.key) composer(comp.side);
-      }
+      });
+      if (rows.length > room) push({ kind: "sep", key: `${f.path}#budget`, file: f.path, text: `… ${rows.length - room} more lines not shown: the diff is too large, double-click the file in the sidebar to view it alone` }, 22);
       if (orphans.length) { push({ kind: "sep", key: `${f.path}#orphans`, file: f.path, text: "Comments no longer anchored to the diff" }, 22); orphans.forEach(th => thread(th, true)); }
     }
     const rest = Object.values(byFile).flat().filter(th => !scope || th[0].file === scope);

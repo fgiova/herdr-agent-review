@@ -33,6 +33,18 @@ export function parseUnified(text) {
   return files;
 }
 
+// Keeps a file's first `max` diff lines, so huge files never reach highlighting or the list; returns how many were dropped.
+export function capRows(f, max) {
+  let left = max, cut = 0;
+  f.blocks = f.blocks.filter((b) => {
+    if (left <= 0) { cut += b.rows.length; return false; }
+    if (b.rows.length > left) { cut += b.rows.length - left; b.rows = b.rows.slice(0, left); }
+    left -= b.rows.length;
+    return true;
+  });
+  return cut;
+}
+
 export function pairSplit(block) {
   const out = [];
   let dels = [], adds = [];
@@ -131,6 +143,8 @@ if (typeof process !== "undefined" && import.meta.url === `file://${process.argv
 
   let f = one(`diff --git a/x.js b/x.js\nindex 1111111..2222222 100644\n--- a/x.js\n+++ b/x.js\n@@ -1,3 +1,3 @@ fn\n a\n-b\n+B\n c\n`);
   eq([f.path, f.oldPath, f.status, f.index, f.binary], ["x.js", "x.js", "modified", "1111111..2222222", false]);
+  const big = { blocks: [{ rows: [1, 2, 3] }, { rows: [4, 5, 6] }, { rows: [7] }] };
+  eq([capRows(big, 4), big.blocks.map((b) => b.rows)], [3, [[1, 2, 3], [4]]]);
   eq(f.blocks[0].rows.map((r) => [r.type, r.oldNo, r.newNo, r.text]), [[" ", 1, 1, "a"], ["-", 2, null, "b"], ["+", null, 2, "B"], [" ", 3, 3, "c"]]);
   eq(pairSplit(f.blocks[0]).map((p) => [p.left?.text, p.right?.text]), [["a", "a"], ["b", "B"], ["c", "c"]]);
 

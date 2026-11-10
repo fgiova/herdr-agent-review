@@ -82,7 +82,7 @@ Comments and "Viewed" marks are kept per repo and survive restarts. A file's "Vi
 ## Limits
 
 - Repos on another machine refresh every 10 seconds instead of on file changes.
-- Up to 1500 diff rows per file and 4000 characters per line. Word highlighting is off for lines with more than 400 tokens per side.
+- Up to 1500 diff lines per file, about 9000 rows for the whole diff, and 4000 characters per line. On a larger diff the rest of each file is hidden behind a "… more lines not shown" line: double-click the file in the panel to view it alone. Comments on hidden lines are listed at the end of their file. Word highlighting is off for lines with more than 400 tokens per side.
 - Syntax colors come from your theme and are picked by file extension: JS/TS and the other C-family languages, PHP, Python, Ruby, shell, SQL, GraphQL, CSS, JSON, YAML, TOML, HTML/XML/Vue and Markdown; other files are shown plain. It is a light highlighter, not a full parser: strings spanning several lines (template literals, heredocs, triple quotes) are colored only on their first line, and code nested in another language (scripts and styles in HTML or Vue) isn't colored.
 - File paths that git quotes (unusual characters) aren't parsed.
 - Comments are re-anchored by exact text match: after an edit, threads whose line changed are listed at the end of their file. A range is re-anchored by its last line; its `lines a–b` label keeps the original numbers.
