@@ -5,8 +5,14 @@ import { spaces, panes, agents, focused, exec, theme, shared, setShared, setting
 import { parseUnified, capRows, pairSplit, wordDiff, anchor, mergeAgent, reviewMessage } from "./diff.js";
 import { annotate, mergeChanged, SYNTAX } from "./highlight.js";
 
+// One diff tab per repo: repo root -> {tab, on}.
+const TABS = "review.tabs";
+
 function location() {
   const space = spaces().find((s) => s.active), f = focused(), ps = panes();
+  // In a repo's diff tab (no terminal there), the sidebar keeps showing that repo.
+  const own = f?.tab && Object.entries(shared(TABS) ?? {}).find(([, v]) => v.tab === f.tab);
+  if (own) return { cwd: own[0], on: own[1].on ?? null };
   // A focused mod pane (the diff itself) has no folder: use a terminal of its tab.
   const pane = f?.pane ? ps.find(p => p.pane === f.pane && !p.mod) ?? ps.find(p => p.tab === f.tab && p.terminal) : null;
   const on = f?.pane === null ? (f.terminal?.includes("/") ? f.terminal.split("/")[0] : null) : space?.machine ?? null;
@@ -19,6 +25,10 @@ const fp = (f) => f.index ?? "-";
 // ponytail: per-file and whole-list caps keep a huge diff renderable (the virtual list takes at most 10000 items).
 const MAX_FILE_ROWS = 1500;
 const MAX_ITEMS = 9000;
+// The "commit" that stands for the whole branch: its store and comment ids use "branch" for the sha.
+// ponytail: one "branch" store per repo; after a checkout to another branch, the new HEAD prunes threads on files no longer in the diff.
+const BRANCH_PICK = { sha: "branch", short: "branch", subject: "All branch changes" };
+const label = (c) => c.sha === "branch" ? c.subject : `${c.short} · ${c.subject}`;
 const PLUS_W = 16; // the "+" column at the left of each side's line numbers
 const VIEWED_W = 90; // right end of a diff file header: the Viewed checkbox
 // Uncommitted changes vs HEAD (empty tree without commits) plus untracked files, as one unified diff.
@@ -27,17 +37,23 @@ const R = "--no-optional-locks -c core.fsmonitor=false -c diff.autoRefreshIndex=
 const DIFF = `git ${R} rev-parse --git-dir >/dev/null || exit 2; B=$(git ${R} rev-parse -q --verify HEAD || git hash-object -t tree /dev/null); echo "$B"; `
   + `git ${R} diff $B --no-color --no-ext-diff --no-textconv; `
   + `git ${R} ls-files -z -o --exclude-standard | xargs -0 -n1 git ${R} diff --no-index --no-color --no-ext-diff -- /dev/null; exit 0`;
+// One commit ($1) against its first parent, same first line as DIFF.
+const SHOW = `git ${R} rev-parse --git-dir >/dev/null || exit 2; echo "$1"; git ${R} show --format= --diff-merges=first-parent --no-color --no-ext-diff --no-textconv "$1" --`;
+// $B: the default branch; $M: where HEAD left it.
+const FORK = `B=$(git ${R} symbolic-ref -q --short refs/remotes/origin/HEAD || { git ${R} rev-parse -q --verify main >/dev/null && echo main; } || echo master); `
+  + `M=$(git ${R} merge-base HEAD "$B" 2>/dev/null); `;
+// Everything committed on the branch since it left the default branch (like a merge request), same first line as DIFF.
+const BRANCH = `git ${R} rev-parse --git-dir >/dev/null || exit 2; ${FORK}git ${R} rev-parse HEAD; `
+  + `[ -n "$M" ] || { echo "No common ancestor with $B" >&2; exit 1; }; git ${R} diff --no-color --no-ext-diff --no-textconv "$M" HEAD`;
+// The branch's commits since it left the default branch; on the default branch itself, its latest ones.
+const LOG = `${FORK}[ -n "$M" ] && [ "$M" != "$(git ${R} rev-parse HEAD)" ] && RANGE="$M..HEAD" || RANGE=HEAD; `
+  + `git ${R} log -n 50 --format='%h%x09%H%x09%s%x09%cr' "$RANGE"`;
 
 async function act(name, args) {
   const r = await exec("herdr-app", ["do", name, JSON.stringify(args)]);
   const j = JSON.parse(r.stdout || "{}");
   if (r.code || j.error) throw new Error(`${name}: ${j.error ?? r.stderr}`);
   return j;
-}
-
-async function spotlight(pane) {
-  if (!panes().find(p => p.pane === pane)?.zoomed) await act("pane.zoom", { pane });
-  await act("pane.focus", { pane });
 }
 
 // Claude Code agents with a pane in the shown space: chosen one first by focus, active tab, recency.
@@ -76,19 +92,22 @@ export default class Review extends View {
   loadDiff(cx) {
     if (this.loading || !this.root) return;
     this.loading = true;
-    const root = this.root, before = [this.gen, this.error];
+    const root = this.root, sha = this.commit()?.sha ?? null, before = [this.gen, this.error];
+    const moved = () => root !== this.root || sha !== (this.commit()?.sha ?? null); // another repo or commit meanwhile
     cx.spawn(async (cx) => {
       try {
-        const r = await exec("sh", ["-c", DIFF], { cwd: root, on: this.on });
-        if (root !== this.root) return; // the sidebar moved to another repo meanwhile
-        if (r.code !== 0) throw new Error(r.code === 2 ? "Not a git repository" : r.stderr.trim() || `git: exit ${r.code}`);
-        this.error = null;
-        if (r.stdout !== this.raw) { this.raw = r.stdout; this.files = parseUnified(r.stdout.slice(r.stdout.indexOf("\n") + 1)); for (const f of this.files) { f.cut = capRows(f, MAX_FILE_ROWS); annotate(f.blocks, f.path); } this.wd = new Map(); this.gen++; }
-        this.prune(r.stdout.slice(0, r.stdout.indexOf("\n")));
+        if (!sha || sha === "branch" || this.diffFor !== sha) { // a commit never changes: read once
+          const r = await exec("sh", sha === "branch" ? ["-c", BRANCH] : sha ? ["-c", SHOW, "sh", sha] : ["-c", DIFF], { cwd: root, on: this.on });
+          if (moved()) return;
+          if (r.code !== 0) throw new Error(r.code === 2 ? "Not a git repository" : r.stderr.trim() || `git: exit ${r.code}`);
+          this.error = null; this.diffFor = sha;
+          if (r.stdout !== this.raw) { this.raw = r.stdout; this.files = parseUnified(r.stdout.slice(r.stdout.indexOf("\n") + 1)); for (const f of this.files) { f.cut = capRows(f, MAX_FILE_ROWS); annotate(f.blocks, f.path); } this.wd = new Map(); this.gen++; }
+          this.prune(r.stdout.slice(0, r.stdout.indexOf("\n")));
+        }
         this.watch(cx);
         await this.takeAgent();
-      } catch (e) { if (root === this.root) this.error = String(e?.message ?? e); }
-      finally { this.loading = false; if (root !== this.root) this.loadDiff(cx); else if (before[0] !== this.gen || before[1] !== this.error) cx.notify(); }
+      } catch (e) { if (!moved()) this.error = String(e?.message ?? e); }
+      finally { this.loading = false; if (moved()) this.loadDiff(cx); else if (before[0] !== this.gen || before[1] !== this.error) cx.notify(); }
     });
   }
 
@@ -101,7 +120,18 @@ export default class Review extends View {
       if (!this.gitDir) { const g = await exec("git", ["rev-parse", "--absolute-git-dir"], { cwd: this.root, on: this.on }); if (g.code) return; this.gitDir = g.stdout.trim(); }
       const path = `${this.gitDir}/herdr-review.jsonl`, raw = await readTextFile(path, { on: this.on });
       if (!raw || root !== this.root) return;
-      this.setComments(all => (mergeAgent(raw, all), all));
+      // A reply goes to the store of its thread (a commit's comment ids carry its sha); a new note to the one shown now.
+      const groups = {};
+      for (const line of raw.split("\n")) {
+        let n; try { n = JSON.parse(line); } catch { continue; }
+        const p = String(n?.parentId ?? ""), m = /^user:([0-9a-f]{12}|branch)\./.exec(p);
+        const k = !p || this.store().comments?.[p] ? this.sk() : m ? `review:${root}@${m[1]}` : `review:${root}`;
+        (groups[k] ??= []).push(line);
+      }
+      for (const [k, lines] of Object.entries(groups)) {
+        const st = shared(k) ?? { comments: {}, viewed: {} }, comments = { ...st.comments };
+        if (mergeAgent(lines.join("\n"), comments)) setShared(k, { ...st, comments });
+      }
       if (!this.on) await writeTextFile(path, "", raw); // rejects if the agent appended meanwhile: the next look takes it all again, ids dedup
       else await exec("sh", ["-c", '[ "$(wc -l < "$1")" -eq "$2" ] && : > "$1"', "sh", path, String((raw.match(/\n/g) ?? []).length)], { on: this.on });
     } catch { /* retried at the next look */ }
@@ -241,8 +271,17 @@ export default class Review extends View {
       .child(cell(r, w?.b, t.ansi2 + "18", t.ansi2 + "40", "new"));
   }
 
-  renderDiff() {
-    const t = theme(), st = shared(`review:${this.root}`) ?? {}, scope = st.scope ?? null;
+  // Follows the commit chosen in the sidebar (shared per repo); switching drops the open composer and selection.
+  follow(cx) {
+    const sha = this.commit()?.sha ?? null;
+    if (!this.root || sha === this.viewSha) return;
+    this.viewSha = sha; this.composer = null; this.sel = null; this.flip?.clear();
+    this.loadDiff(cx);
+  }
+
+  renderDiff(cx) {
+    this.follow(cx);
+    const t = theme(), st = this.store(), scope = st.scope ?? null, commit = this.commit();
     const built = `${this.gen}:${scope}:${this.textW}:${JSON.stringify(st.comments ?? {})}:${JSON.stringify(this.composer)}:${JSON.stringify(st.viewed ?? {})}:${JSON.stringify([...this.flip])}`;
     if (this.built !== built) this.build(st, built);
     const g = shared("review.goto");
@@ -257,7 +296,8 @@ export default class Review extends View {
       .on_size_change((s, cx) => { this.paneW = s.width; const w = Math.floor((s.width - 1) / 2) - 74; if (w !== this.textW) { this.textW = w; cx.notify(); } })
       .child(h_flex().h(36).flex_none().px(12).gap(8).items_center().border_b(1).border_color(t.border)
         .child(div().font_semibold().child("Diff"))
-        .child(div().min_w(0).truncate().text_size(11).text_color(t.muted).child(base(this.root ?? "")))
+        .child(div().flex_none().text_size(11).text_color(t.muted).child(base(this.root ?? "")))
+        .when(Boolean(commit), e => e.child(div().min_w(0).truncate().px(4).rounded(4).border_1().border_color(t.accent).text_size(10).text_color(t.accent).child(label(commit))))
         .when(Boolean(scope), e => e.child(div().px(4).rounded(4).border_1().border_color(t.border).text_size(10).text_color(t.accent).child(`only ${scope}`)))
         .child(div().flex_1())
         .child(div().text_size(11).text_color(t.dim).child(`${count} ${count === 1 ? "file" : "files"}`)))
@@ -366,7 +406,7 @@ export default class Review extends View {
   // Comment store helpers. Each write re-reads the store first: the sidebar writes it too.
   setComments(fn) { const st = this.store(); this.save({ ...st, comments: fn({ ...st.comments }) }); }
   addComment({ file, side, line, end, code, ctx, parentId, text }) {
-    const id = `user:${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+    const sha = this.commit()?.sha, id = `user:${sha ? `${sha}.` : ""}${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
     this.setComments(all => ({ ...all, [id]: { id, source: "user", author: "user", file, side, line, text,
       at: new Date().toISOString(), parentId: parentId ?? null, sent: false, ...(ctx == null ? {} : { ctx }), ...(end ? { end, code } : {}) } }));
     return id;
@@ -377,7 +417,7 @@ export default class Review extends View {
     this.setComments(all => { const gone = (c) => c && (c.id === id || gone(all[c.parentId])); return Object.fromEntries(Object.entries(all).filter(([, c]) => !gone(c))); });
   }
 
-  // Comments, Viewed and scope per repo, in shared state.
+  // Comments, Viewed and scope per repo and view (local changes, or one commit), in shared state.
   // A new HEAD (commit, checkout) closes the threads on files no longer in the diff.
   prune(head) {
     const st = this.store();
@@ -387,15 +427,36 @@ export default class Review extends View {
     this.save({ ...st, head, comments, scope: st.scope && !live.has(st.scope) ? null : st.scope ?? null });
   }
 
-  store() { return shared(`review:${this.root}`) ?? { comments: {}, viewed: {} }; }
-  save(s) { if (JSON.stringify(s) !== JSON.stringify(this.store())) setShared(`review:${this.root}`, s); }
+  commit() { return this.root ? shared(`review.commit:${this.root}`) ?? null : null; }
+  sk() { const c = this.commit(); return c ? `review:${this.root}@${c.sha}` : `review:${this.root}`; }
+  store() { return shared(this.sk()) ?? { comments: {}, viewed: {} }; }
+  save(s) { if (JSON.stringify(s) !== JSON.stringify(this.store())) setShared(this.sk(), s); }
+
+  loadCommits(cx) {
+    const root = this.root;
+    cx.spawn(async (cx) => {
+      const r = await exec("sh", ["-c", LOG], { cwd: root, on: this.on });
+      if (root !== this.root) return;
+      this.commits = r.code ? [] : r.stdout.split("\n").filter(Boolean).map(l => {
+        const [short, sha, subject, when] = l.split("\t");
+        return { short, sha: sha.slice(0, 12), subject, when };
+      });
+      cx.notify();
+    });
+  }
+
+  pickCommit(c, cx) {
+    setShared(`review.commit:${this.root}`, c ? { sha: c.sha, short: c.short, subject: c.subject } : null);
+    this.picking = false; this.current = undefined;
+    this.follow(cx);
+  }
   rootOf(c, all) { while (c.parentId && all[c.parentId]) c = all[c.parentId]; return c; }
 
   // Sidebar: the repo follows the focused pane; its files come from loadDiff, like the pane's.
   refresh(cx) {
     const { cwd, on } = location(), context = key();
     if (context !== this.context) {
-      this.context = context; this.root = this.gitDir = this.raw = this.current = undefined;
+      this.context = context; this.root = this.gitDir = this.raw = this.current = this.diffFor = this.viewSha = undefined; this.picking = false;
       this.files = []; this.error = null; this.note = null;
     }
     if (this.root) return this.loadDiff(cx);
@@ -441,15 +502,21 @@ export default class Review extends View {
     });
   }
 
-  diffPane() {
-    const tabs = new Set(spaces().find(s => s.active)?.tabs.map(t => t.id));
-    return panes().find(p => p.mod === "agent-review" && tabs.has(p.tab));
+  // This repo's diff tab while it's still open, and its space.
+  diffTab() {
+    const tab = (shared(TABS) ?? {})[this.root]?.tab, space = tab && spaces().find(s => s.tabs.some(t => t.id === tab));
+    return space ? { space, tab } : null;
   }
 
+  // The diff opens in a tab of its own in the current space, one per repo; again: shows that tab.
   openDiff(cx) {
-    if (this.busy) return; // a split already on its way
-    const shown = this.diffPane()?.pane, pane = focused()?.pane, root = this.root;
-    this.task(cx, "diff", async () => spotlight(shown ?? (await act("pane.split", { direction: "right", mod: "agent-review", props: { view: "diff", root, on: this.on ?? null }, ...(pane ? { pane } : {}) })).pane));
+    if (this.busy) return; // a tab already on its way
+    const at = this.diffTab(), root = this.root, on = this.on ?? null, space = spaces().find(s => s.active)?.id;
+    this.task(cx, "diff", async () => {
+      if (at) { if (!at.space.active) await act("space.select", { id: at.space.id }); return act("tab.select", { id: at.tab }); }
+      const made = await act("tab.new", { name: `Review ${base(root)}`, ...(space ? { space } : {}), mod: "agent-review", props: { view: "diff", root, on } });
+      setShared(TABS, { ...(shared(TABS) ?? {}), [root]: { tab: made.tab, on } });
+    });
   }
 
   // Click: scroll the diff pane to the file, opening or showing the pane. Scoped to another file, the scope moves here.
@@ -465,7 +532,7 @@ export default class Review extends View {
     const { pick } = claudeAgents(this.agent), pend = this.pending();
     if (!pick || !pend.length || this.busy) return;
     const ids = new Set(pend.map(c => c.id));
-    const text = reviewMessage(this.root, `${this.gitDir}/herdr-review.jsonl`, this.threads().filter(t => t.some(c => ids.has(c.id))), ids);
+    const text = reviewMessage(this.root, `${this.gitDir}/herdr-review.jsonl`, this.threads().filter(t => t.some(c => ids.has(c.id))), ids, this.commit());
     if (text.length > 50000) { this.ok = false; this.note = `Message too large (${Math.round(text.length / 1000)} KB > 50 KB): not sent`; cx.notify(); return; }
     this.task(cx, "send", async () => {
       const r = await exec("hc", ["send", pick.address, text]);
@@ -478,8 +545,10 @@ export default class Review extends View {
   }
 
   render(cx) {
-    if (this.view === "diff") return this.renderDiff();
+    if (this.view === "diff") return this.renderDiff(cx);
     if (key() !== this.context) this.refresh(cx);
+    this.follow(cx);
+    const commit = this.commit();
     const t = theme(), st = this.root ? this.store() : { comments: {}, viewed: {} };
     const threads = this.root ? this.threads() : [], pend = this.root ? this.pending() : [];
     const { ours, pick } = claudeAgents(this.agent);
@@ -516,16 +585,32 @@ export default class Review extends View {
     };
     walk(root, 0, "");
     const status = this.error ?? (!this.root ? "No repository" : this.raw === undefined ? "Loading…" : !paths.length ? "No changes" : null);
+    const pickRow = (id, label, sub, on, c) => v_flex().id(id).px(8).py(4).rounded(6).cursor_pointer().hover(s => s.bg(t.hover)).when(on, e => e.bg(t.selected))
+      .on_click((_e, cx) => this.pickCommit(c, cx))
+      .child(div().truncate().text_size(12).text_color(t.foreground).child(label))
+      .when(Boolean(sub), e => e.child(div().truncate().text_size(11).text_color(t.dim).child(sub)));
+    const picker = [pickRow("pick-local", "Local changes", "uncommitted and untracked files", !commit, null),
+      pickRow("pick-branch", BRANCH_PICK.subject, "everything committed since the default branch", commit?.sha === "branch", BRANCH_PICK),
+      ...(this.commits === undefined ? [div().p(8).text_color(t.dim).child("Loading commits…")]
+        : !this.commits.length ? [div().p(8).text_color(t.dim).child("No commits")]
+        : this.commits.map(c => pickRow(`pick-${c.sha}`, c.subject, `${c.short} · ${c.when}`, commit?.sha === c.sha, c)))];
     return v_flex().id("review").size_full().min_h(0).rounded(10).overflow_hidden().bg(t.background).border_1().border_color(t.border).text_color(t.foreground).text_size(13)
       .child(h_flex().h(42).flex_none().px(14).gap(8).items_center().border_b(1).border_color(t.border)
         .child(div().font_semibold().child("Review"))
         .child(div().min_w(0).truncate().text_size(11).text_color(t.muted).child(this.root ? base(this.root) : ""))
         .child(tag(`Viewed ${viewed}/${this.files.length}`, t.muted))
         .child(div().flex_1())
-        .when(Boolean(this.root), e => e.child(button("diff", this.diffPane() ? "Show diff" : "Open diff", !this.busy, cx => this.openDiff(cx))))
+        .when(Boolean(this.root), e => e.child(button("diff", this.diffTab() ? "Show diff" : "Open diff", !this.busy, cx => this.openDiff(cx))))
         .child(div().id("refresh").px(4).cursor_pointer().text_color(t.dim).hover(s => s.text_color(t.foreground)).on_click((_e, cx) => this.refresh(cx)).child("↻")))
-      .child(v_flex().id("review-list").flex_1().min_h(0).overflow_y_scrollbar().p(8).children(rows)
-        .when(Boolean(status), e => e.child(div().p(8).text_color(t.dim).child(status))))
+      .when(Boolean(this.root), e => e.child(h_flex().flex_none().px(8).py(6).border_b(1).border_color(t.border)
+        .child(h_flex().id("pick").flex_1().min_w(0).h(24).px(8).gap(6).items_center().rounded(6).border_1()
+          .border_color(commit ? t.accent : t.border).bg(commit ? t.accent + "14" : t.raised).text_size(12).text_color(commit ? t.accent : t.muted)
+          .cursor_pointer().hover(s => s.bg(t.hover)).tooltip("Review local changes or one commit of the branch")
+          .on_click((_e, cx) => { this.picking = !this.picking; if (this.picking) { this.commits = undefined; this.loadCommits(cx); } cx.notify(); })
+          .child(div().flex_1().min_w(0).truncate().child(commit ? label(commit) : "Local changes"))
+          .child(div().flex_none().text_size(10).child(this.picking ? "▴" : "▾")))))
+      .child(v_flex().id("review-list").flex_1().min_h(0).overflow_y_scrollbar().p(8).children(this.picking ? picker : rows)
+        .when(Boolean(status) && !this.picking, e => e.child(div().p(8).text_color(t.dim).child(status))))
       .child(v_flex().flex_none().p(10).gap(8).border_t(1).border_color(t.border)
         .when(ours.length > 1, e => e.child(h_flex().flex_wrap().gap(6).children(ours.map(a =>
           div().id(`a-${a.address}`).px(8).py(2).rounded(6).border_1().border_color(a === pick ? t.accent : t.border).bg(a === pick ? t.selected : t.raised)

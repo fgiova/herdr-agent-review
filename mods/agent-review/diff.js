@@ -120,8 +120,12 @@ export function mergeAgent(raw, all) {
 }
 
 // The "Send review" message: threads (root first) grouped by file; `ids` = the comments not sent yet; `file` = the agent channel.
-export function reviewMessage(root, file, threads, ids) {
-  const indent = (s) => s.trim().replace(/\n/g, "\n    "), lines = [`Review of repo ${root}. Comments to address:`];
+export function reviewMessage(root, file, threads, ids, commit) {
+  const indent = (s) => s.trim().replace(/\n/g, "\n    "), lines = [commit?.sha === "branch"
+    ? `Review of all changes committed on the current branch of repo ${root} (since it left the default branch). Comments to address:`
+    : commit
+    ? `Review of commit ${commit.short} ("${commit.subject}") in repo ${root}. Line numbers refer to that commit: find the same code in the current files. Comments to address:`
+    : `Review of repo ${root}. Comments to address:`];
   for (const f of [...new Set(threads.map(t => t[0].file))]) {
     lines.push("", `## ${f}`);
     for (const [r, ...replies] of threads.filter(t => t[0].file === f)) {
