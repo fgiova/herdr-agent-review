@@ -28,7 +28,7 @@ const MAX_ITEMS = 9000;
 // The "commit" that stands for the whole branch: its store and comment ids use "branch" for the sha.
 // ponytail: one "branch" store per repo; after a checkout to another branch, the new HEAD prunes threads on files no longer in the diff.
 const BRANCH_PICK = { sha: "branch", short: "branch", subject: "All branch changes" };
-const label = (c) => c.sha === "branch" ? c.subject : `${c.short} · ${c.subject}`;
+const label = (c, base) => c.sha === "branch" ? `${c.subject}${base ? ` since ${base}` : ""}` : `${c.short} · ${c.subject}`;
 const PLUS_W = 16; // the "+" column at the left of each side's line numbers
 const VIEWED_W = 90; // right end of a diff file header: the Viewed checkbox
 // Uncommitted changes vs HEAD (empty tree without commits) plus untracked files, as one unified diff.
@@ -39,15 +39,24 @@ const DIFF = `git ${R} rev-parse --git-dir >/dev/null || exit 2; B=$(git ${R} re
   + `git ${R} ls-files -z -o --exclude-standard | xargs -0 -n1 git ${R} diff --no-index --no-color --no-ext-diff -- /dev/null; exit 0`;
 // One commit ($1) against its first parent, same first line as DIFF.
 const SHOW = `git ${R} rev-parse --git-dir >/dev/null || exit 2; echo "$1"; git ${R} show --format= --diff-merges=first-parent --no-color --no-ext-diff --no-textconv "$1" --`;
-// $B: the default branch; $M: where HEAD left it.
-const FORK = `B=$(git ${R} symbolic-ref -q --short refs/remotes/origin/HEAD || { git ${R} rev-parse -q --verify main >/dev/null && echo main; } || echo master); `
-  + `M=$(git ${R} merge-base HEAD "$B" 2>/dev/null); `;
-// Everything committed on the branch since it left the default branch (like a merge request), same first line as DIFF.
+// $B: the branch this one started from ($1; empty: the default branch); $M: where HEAD left it.
+const DEFAULT = `{ git ${R} symbolic-ref -q --short refs/remotes/origin/HEAD || { git ${R} rev-parse -q --verify main >/dev/null && echo main; } || echo master; }`;
+const FORK = `B="$1"; [ -n "$B" ] || B=$(${DEFAULT}); M=$(git ${R} merge-base HEAD "$B" 2>/dev/null); `;
+// Everything committed on the branch since it left its base (like a merge request), same first line as DIFF.
 const BRANCH = `git ${R} rev-parse --git-dir >/dev/null || exit 2; ${FORK}git ${R} rev-parse HEAD; `
   + `[ -n "$M" ] || { echo "No common ancestor with $B" >&2; exit 1; }; git ${R} diff --no-color --no-ext-diff --no-textconv "$M" HEAD`;
-// The branch's commits since it left the default branch; on the default branch itself, its latest ones.
+// The branch's commits since it left its base; on the default branch itself, its latest ones.
 const LOG = `${FORK}[ -n "$M" ] && [ "$M" != "$(git ${R} rev-parse HEAD)" ] && RANGE="$M..HEAD" || RANGE=HEAD; `
   + `git ${R} log -n 50 --format='%h%x09%H%x09%s%x09%cr' "$RANGE"`;
+// Candidate bases: HEAD on the first line, then "<commits since the fork>\t<branch>" for every other branch.
+// The default branch comes first so it wins ties; the current branch, its upstream and branches containing HEAD are skipped.
+// ponytail: one merge-base + rev-list per branch (a few seconds with hundreds of remotes); cached per HEAD in shared state.
+const BASES = `git ${R} rev-parse --git-dir >/dev/null || exit 2; H=$(git ${R} rev-parse HEAD) || exit 1; echo "$H"; `
+  + `C=$(git ${R} symbolic-ref -q --short HEAD); U=$(git ${R} rev-parse -q --abbrev-ref '@{u}' 2>/dev/null); D=$(${DEFAULT}); `
+  + `{ echo "refs/default $D"; git ${R} for-each-ref --format='%(refname) %(refname:short)' refs/heads refs/remotes; } | while read -r full b; do `
+  + `case "$full" in */HEAD) continue;; esac; { [ "$b" = "$C" ] || [ "$b" = "$U" ] || [ "$b" = "origin/$C" ]; } && continue; `
+  + `m=$(git ${R} merge-base HEAD "$b" 2>/dev/null) || continue; [ "$m" = "$H" ] && continue; `
+  + `printf '%s\\t%s\\n' "$(git ${R} rev-list --count "$m..HEAD")" "$b"; done`;
 
 async function act(name, args) {
   const r = await exec("herdr-app", ["do", name, JSON.stringify(args)]);
@@ -97,7 +106,7 @@ export default class Review extends View {
     cx.spawn(async (cx) => {
       try {
         if (!sha || sha === "branch" || this.diffFor !== sha) { // a commit never changes: read once
-          const r = await exec("sh", sha === "branch" ? ["-c", BRANCH] : sha ? ["-c", SHOW, "sh", sha] : ["-c", DIFF], { cwd: root, on: this.on });
+          const r = await exec("sh", sha === "branch" ? ["-c", BRANCH, "sh", await this.base(root)] : sha ? ["-c", SHOW, "sh", sha] : ["-c", DIFF], { cwd: root, on: this.on });
           if (moved()) return;
           if (r.code !== 0) throw new Error(r.code === 2 ? "Not a git repository" : r.stderr.trim() || `git: exit ${r.code}`);
           this.error = null; this.diffFor = sha;
@@ -273,7 +282,7 @@ export default class Review extends View {
 
   // Follows the commit chosen in the sidebar (shared per repo); switching drops the open composer and selection.
   follow(cx) {
-    const sha = this.commit()?.sha ?? null;
+    const c = this.commit()?.sha ?? null, sha = c === "branch" ? `branch:${this.manualBase() ?? ""}` : c;
     if (!this.root || sha === this.viewSha) return;
     this.viewSha = sha; this.composer = null; this.sel = null; this.flip?.clear();
     this.loadDiff(cx);
@@ -297,7 +306,7 @@ export default class Review extends View {
       .child(h_flex().h(36).flex_none().px(12).gap(8).items_center().border_b(1).border_color(t.border)
         .child(div().font_semibold().child("Diff"))
         .child(div().flex_none().text_size(11).text_color(t.muted).child(base(this.root ?? "")))
-        .when(Boolean(commit), e => e.child(div().min_w(0).truncate().px(4).rounded(4).border_1().border_color(t.accent).text_size(10).text_color(t.accent).child(label(commit))))
+        .when(Boolean(commit), e => e.child(div().min_w(0).truncate().px(4).rounded(4).border_1().border_color(t.accent).text_size(10).text_color(t.accent).child(label(commit, this.currentBase()))))
         .when(Boolean(scope), e => e.child(div().px(4).rounded(4).border_1().border_color(t.border).text_size(10).text_color(t.accent).child(`only ${scope}`)))
         .child(div().flex_1())
         .child(div().text_size(11).text_color(t.dim).child(`${count} ${count === 1 ? "file" : "files"}`)))
@@ -432,10 +441,36 @@ export default class Review extends View {
   store() { return shared(this.sk()) ?? { comments: {}, viewed: {} }; }
   save(s) { if (JSON.stringify(s) !== JSON.stringify(this.store())) setShared(this.sk(), s); }
 
+  // The branch's base: the one picked by hand, else the nearest fork point found by BASES, else "" (the default branch).
+  manualBase() { return this.root ? shared(`review.base:${this.root}`) ?? null : null; }
+  bases() { return this.root ? shared(`review.bases:${this.root}`)?.list ?? null : null; }
+  currentBase() { return this.manualBase() ?? this.bases()?.[0]?.name ?? null; }
+  async base(root) {
+    const manual = shared(`review.base:${root}`);
+    if (manual) return manual;
+    const head = (await exec("sh", ["-c", `git ${R} rev-parse HEAD`], { cwd: root, on: this.on })).stdout.trim();
+    let cached = shared(`review.bases:${root}`);
+    if (cached?.head !== head) {
+      const r = await exec("sh", ["-c", BASES], { cwd: root, on: this.on, timeout: 120000 });
+      const [h, ...lines] = r.code ? [head] : r.stdout.split("\n").filter(Boolean), seen = new Set(), list = [];
+      for (const [n, name] of lines.map((l) => l.split("\t")).map(([n, name]) => [Number(n), name]).sort((a, b) => a[0] - b[0]))
+        if (!seen.has(name)) { seen.add(name); list.push({ name, n }); }
+      setShared(`review.bases:${root}`, (cached = { head: h, list }));
+    }
+    return cached.list[0]?.name ?? "";
+  }
+
+  pickBase(name, cx) {
+    setShared(`review.base:${this.root}`, name);
+    this.pickingBase = false; this.commits = undefined;
+    this.loadCommits(cx);
+    this.follow(cx);
+  }
+
   loadCommits(cx) {
     const root = this.root;
     cx.spawn(async (cx) => {
-      const r = await exec("sh", ["-c", LOG], { cwd: root, on: this.on });
+      const r = await exec("sh", ["-c", LOG, "sh", await this.base(root)], { cwd: root, on: this.on });
       if (root !== this.root) return;
       this.commits = r.code ? [] : r.stdout.split("\n").filter(Boolean).map(l => {
         const [short, sha, subject, when] = l.split("\t");
@@ -532,7 +567,7 @@ export default class Review extends View {
     const { pick } = claudeAgents(this.agent), pend = this.pending();
     if (!pick || !pend.length || this.busy) return;
     const ids = new Set(pend.map(c => c.id));
-    const text = reviewMessage(this.root, `${this.gitDir}/herdr-review.jsonl`, this.threads().filter(t => t.some(c => ids.has(c.id))), ids, this.commit());
+    const text = reviewMessage(this.root, `${this.gitDir}/herdr-review.jsonl`, this.threads().filter(t => t.some(c => ids.has(c.id))), ids, this.commit() && { ...this.commit(), base: this.currentBase() });
     if (text.length > 50000) { this.ok = false; this.note = `Message too large (${Math.round(text.length / 1000)} KB > 50 KB): not sent`; cx.notify(); return; }
     this.task(cx, "send", async () => {
       const r = await exec("hc", ["send", pick.address, text]);
@@ -589,8 +624,19 @@ export default class Review extends View {
       .on_click((_e, cx) => this.pickCommit(c, cx))
       .child(div().truncate().text_size(12).text_color(t.foreground).child(label))
       .when(Boolean(sub), e => e.child(div().truncate().text_size(11).text_color(t.dim).child(sub)));
-    const picker = [pickRow("pick-local", "Local changes", "uncommitted and untracked files", !commit, null),
-      pickRow("pick-branch", BRANCH_PICK.subject, "everything committed since the default branch", commit?.sha === "branch", BRANCH_PICK),
+    const manual = this.manualBase(), auto = this.bases()?.[0]?.name ?? null, cur = manual ?? auto;
+    const baseRow = (id, text, sub, on, name) => v_flex().id(id).px(8).py(4).rounded(6).cursor_pointer().hover(s => s.bg(t.hover)).when(on, e => e.bg(t.selected))
+      .on_click((_e, cx) => this.pickBase(name, cx))
+      .child(div().truncate().text_size(12).text_color(t.foreground).child(text))
+      .when(Boolean(sub), e => e.child(div().truncate().text_size(11).text_color(t.dim).child(sub)));
+    const basePicker = [div().px(8).py(4).text_size(11).text_color(t.dim).child("Compare the branch against"),
+      baseRow("base-auto", `Automatic${auto ? ` · ${auto}` : ""}`, "the branch this one most recently left", !manual, null),
+      ...(this.bases() ?? []).map((b, i) => baseRow(`base-${i}`, b.name, `${b.n} commit${b.n === 1 ? "" : "s"} since the fork`, manual === b.name, b.name))];
+    const picker = this.pickingBase ? basePicker : [pickRow("pick-local", "Local changes", "uncommitted and untracked files", !commit, null),
+      pickRow("pick-branch", BRANCH_PICK.subject, `everything committed since ${cur ?? "the default branch"}`, commit?.sha === "branch", BRANCH_PICK),
+      h_flex().id("pick-base").mx(8).mb(4).gap(4).items_center().cursor_pointer().text_size(11).text_color(t.accent).hover(s => s.text_color(t.foreground))
+        .on_click((_e, cx) => { this.pickingBase = true; cx.notify(); })
+        .child(div().truncate().child(`Base: ${cur ?? "default branch"}${manual ? "" : " (auto)"} ▸`)),
       ...(this.commits === undefined ? [div().p(8).text_color(t.dim).child("Loading commits…")]
         : !this.commits.length ? [div().p(8).text_color(t.dim).child("No commits")]
         : this.commits.map(c => pickRow(`pick-${c.sha}`, c.subject, `${c.short} · ${c.when}`, commit?.sha === c.sha, c)))];
@@ -606,8 +652,8 @@ export default class Review extends View {
         .child(h_flex().id("pick").flex_1().min_w(0).h(24).px(8).gap(6).items_center().rounded(6).border_1()
           .border_color(commit ? t.accent : t.border).bg(commit ? t.accent + "14" : t.raised).text_size(12).text_color(commit ? t.accent : t.muted)
           .cursor_pointer().hover(s => s.bg(t.hover)).tooltip("Review local changes or one commit of the branch")
-          .on_click((_e, cx) => { this.picking = !this.picking; if (this.picking) { this.commits = undefined; this.loadCommits(cx); } cx.notify(); })
-          .child(div().flex_1().min_w(0).truncate().child(commit ? label(commit) : "Local changes"))
+          .on_click((_e, cx) => { this.picking = !this.picking; this.pickingBase = false; if (this.picking) { this.commits = undefined; this.loadCommits(cx); } cx.notify(); })
+          .child(div().flex_1().min_w(0).truncate().child(commit ? label(commit, this.currentBase()) : "Local changes"))
           .child(div().flex_none().text_size(10).child(this.picking ? "▴" : "▾")))))
       .child(v_flex().id("review-list").flex_1().min_h(0).overflow_y_scrollbar().p(8).children(this.picking ? picker : rows)
         .when(Boolean(status) && !this.picking, e => e.child(div().p(8).text_color(t.dim).child(status))))

@@ -69,8 +69,9 @@ In Herdr, ask an agent: *"Install the Herdr mod from https://github.com/fgiova/h
 
 1. In a space whose terminal is inside a git repo with uncommitted changes, show the Agent Review panel and click **Open diff**: the diff opens in a new tab, `Review <repo>`. The panel keeps showing that repo while you are in the tab; from another tab, **Show diff** takes you back to it.
 2. To review what is already committed, open the picker under the panel header (it says **Local changes**):
-   - **All branch changes** shows everything committed on the branch since it left the default branch (`origin/HEAD`, else `main` or `master`), like a merge request;
-   - below it are the branch's commits (at most 50; on the default branch, its latest 50): pick one to review only that commit.
+   - **All branch changes** shows everything committed on the branch since it left its base branch, like a merge request into that branch;
+   - **Base: … ▸** under it shows which base is used. By default it is found automatically: the branch (local or remote) your branch most recently left, so a branch started from another feature branch is compared with that one, not with `main`; on a tie, the default branch (`origin/HEAD`, else `main` or `master`) wins. Click it to pick another base by hand, or **Automatic** to go back;
+   - below it are the branch's commits since that base (at most 50; with no base, e.g. on the default branch, the latest 50): pick one to review only that commit.
 
    The panel and the diff switch together. Each choice has its own comments and Viewed marks, and the message to the agent says which commit or branch it is about.
 3. Tick **Viewed** at the right of a file's header to fold it and mark it in the panel. Click elsewhere on a header to fold or unfold that file.
@@ -88,7 +89,8 @@ Comments and "Viewed" marks are kept per repo and per choice in the picker, and 
 
 - Repos on another machine refresh every 10 seconds instead of on file changes.
 - Up to 1500 diff lines per file, about 9000 rows for the whole diff, and 4000 characters per line. On a larger diff the rest of each file is hidden behind a "… more lines not shown" line: double-click the file in the panel to view it alone. Comments on hidden lines are listed at the end of their file. Word highlighting is off for lines with more than 400 tokens per side.
-- Syntax colors come from your theme and are picked by file extension: JS/TS and the other C-family languages, PHP, Python, Ruby, shell, SQL, GraphQL, CSS, JSON, YAML, TOML, HTML/XML/Vue and Markdown; other files are shown plain. It is a light highlighter, not a full parser: strings spanning several lines (template literals, heredocs, triple quotes) are colored only on their first line, and code nested in another language (scripts and styles in HTML or Vue) isn't colored.
+- Syntax colors come from your theme and are picked by file extension: JS/TS and the other C-family languages, PHP, Python, Ruby, shell, SQL, GraphQL, CSS, JSON, YAML, TOML, HTML/XML/Vue and Markdown; other files are shown plain. It is a light highlighter, not a full parser: strings spanning several lines (template literals, heredocs, triple quotes) are colored only on their first line, and code nested in another language (scripts and styles in HTML or Vue) isn't colored. Lines over 2000 characters (minified or generated files) aren't colored, so huge diffs still load quickly.
+- The automatic base is a guess: an old branch left pointing at a commit in the middle of your branch becomes the base and hides the commits before it. Pick the base by hand in that case. Finding it runs two git commands per branch, once each time HEAD moves: with hundreds of remote branches that takes a few seconds.
 - File paths that git quotes (unusual characters) aren't parsed.
 - Comments are re-anchored by exact text match: after an edit, threads whose line changed are listed at the end of their file. A range is re-anchored by its last line; its `lines a–b` label keeps the original numbers.
 - A commit's comments refer to that commit's line numbers, not to the current files. A commit that no longer exists (after a rebase) shows a git error: pick another view.
