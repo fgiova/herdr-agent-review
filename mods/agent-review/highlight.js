@@ -3,6 +3,7 @@
 // ponytail: no grammar; multi-line strings and nested languages (JS in HTML) are not tracked.
 
 const words = (s) => new Set(s.split(" "));
+const MAX_LINE = 2000;
 const C_KEYWORDS = words("abstract as async await break case catch class const continue debugger default defer delete do else enum export extends false final finally fn for from func function go goto if impl implements import in instanceof interface is let match mod module mut namespace new nil null of override package private protected pub public readonly return satisfies select static struct super switch this throw throws trait true try type typeof undefined use var void while with yield");
 const PHP_KEYWORDS = words("abstract and array as break case catch class clone const continue declare default do echo else elseif empty enum extends false final finally fn for foreach function global if implements include instanceof interface isset list match namespace new null or print private protected public readonly require return self static switch throw trait true try unset use var while yield");
 const PY_KEYWORDS = words("and as assert async await break class continue def del elif else except False finally for from global if import in is lambda None nonlocal not or pass raise return self True try while with yield");
@@ -47,6 +48,9 @@ export function tokenize(line, lang, state = null) {
   const out = [];
   const push = (text, kind) => { if (!text) return; const last = out.at(-1); last && last[1] === kind ? (last[0] += text) : out.push([text, kind]); };
   if (!lang) return { tokens: [[line, null]], state: null };
+  // ponytail: each token slices the rest of the line, O(n²); Herdr's JS engine copies on slice, so a 40k-char
+  // minified line takes minutes. Long lines stay plain; sticky regexes over the whole line if they ever need color.
+  if (line.length > MAX_LINE) return { tokens: [[line, null]], state };
   if (lang.md) {
     if (/^\s*#{1,6}\s/.test(line)) return { tokens: [[line, "keyword"]], state: null };
     for (const part of line.split(/(`[^`]*`)/)) push(part, part.startsWith("`") && part.length > 1 ? "string" : null);
